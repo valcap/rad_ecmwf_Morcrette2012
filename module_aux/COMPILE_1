@@ -1,0 +1,2 @@
+ifort -c  -I ../include  *.F90
+

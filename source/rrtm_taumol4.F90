@@ -1,0 +1,201 @@
+!----------------------------------------------------------------------------
+SUBROUTINE RRTM_TAUMOL4 (KIDIA,KFDIA,KLEV,P_TAU,&
+ & P_TAUAERL,P_FAC00,P_FAC01,P_FAC10,P_FAC11,P_FORFAC,K_JP,K_JT,K_JT1,P_ONEMINUS,&
+ & P_COLH2O,P_COLCO2,P_COLO3,K_LAYTROP,P_SELFFAC,P_SELFFRAC,K_INDSELF,PFRAC)  
+
+!     BAND 4:  630-700 cm-1 (low - H2O,CO2; high - O3,CO2)
+
+! Modifications
+!        M.Hamrud      01-Oct-2003 CY28 Cleaning
+
+!     D Salmond 2000-05-15 speed-up
+!        NEC           25-Oct-2007 Optimisations
+
+USE PARKIND1  ,ONLY : JPIM     ,JPRB
+
+USE PARRRTM  , ONLY : JPLAY  ,JPBAND ,JPGPT  ,NG4   ,NGS3
+USE YOERRTWN , ONLY : NSPA   ,NSPB
+USE YOERRTA4 , ONLY : ABSA   ,ABSB   ,FRACREFA, FRACREFB,SELFREF,STRRAT1 , STRRAT2
+
+!  Input
+!#include "yoeratm.h"
+
+!      REAL TAUAER(JPLAY)
+
+IMPLICIT NONE
+
+!  Output
+INTEGER(KIND=JPIM),INTENT(IN)    :: KIDIA
+INTEGER(KIND=JPIM),INTENT(IN)    :: KFDIA
+INTEGER(KIND=JPIM),INTENT(IN)    :: KLEV 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: P_TAU(KIDIA:KFDIA,JPGPT,JPLAY) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_TAUAERL(KIDIA:KFDIA,JPLAY,JPBAND) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_FAC00(KIDIA:KFDIA,JPLAY) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_FAC01(KIDIA:KFDIA,JPLAY) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_FAC10(KIDIA:KFDIA,JPLAY) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_FAC11(KIDIA:KFDIA,JPLAY) 
+REAL(KIND=JPRB)                  :: P_FORFAC(KIDIA:KFDIA,JPLAY) ! Argument NOT used
+INTEGER(KIND=JPIM),INTENT(IN)    :: K_JP(KIDIA:KFDIA,JPLAY) 
+INTEGER(KIND=JPIM),INTENT(IN)    :: K_JT(KIDIA:KFDIA,JPLAY) 
+INTEGER(KIND=JPIM),INTENT(IN)    :: K_JT1(KIDIA:KFDIA,JPLAY) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_ONEMINUS
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_COLH2O(KIDIA:KFDIA,JPLAY) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_COLCO2(KIDIA:KFDIA,JPLAY) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_COLO3(KIDIA:KFDIA,JPLAY) 
+INTEGER(KIND=JPIM),INTENT(IN)    :: K_LAYTROP(KIDIA:KFDIA) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_SELFFAC(KIDIA:KFDIA,JPLAY) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: P_SELFFRAC(KIDIA:KFDIA,JPLAY) 
+INTEGER(KIND=JPIM),INTENT(IN)    :: K_INDSELF(KIDIA:KFDIA,JPLAY) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PFRAC(KIDIA:KFDIA,JPGPT,JPLAY) 
+!- from AER
+!- from INTFAC      
+!- from INTIND
+!- from PRECISE             
+!- from PROFDATA             
+!- from SELF             
+!- from SP             
+INTEGER(KIND=JPIM) :: IJS(JPLAY)
+REAL(KIND=JPRB) :: ZFS(JPLAY),Z_SPECCOMB(JPLAY)
+INTEGER(KIND=JPIM) :: IND0(JPLAY),IND1(JPLAY),INDS(JPLAY)
+
+INTEGER(KIND=JPIM) :: JG, JS, JLAY
+INTEGER(KIND=JPIM) :: JLON
+
+REAL(KIND=JPRB) :: Z_FAC000, Z_FAC001, Z_FAC010, Z_FAC011, Z_FAC100, Z_FAC101,&
+ & Z_FAC110, Z_FAC111, Z_FS, Z_SPECMULT, Z_SPECPARM  
+
+!      EQUIVALENCE (TAUAERL(1,4),TAUAER)
+
+!     Compute the optical depth by interpolating in ln(pressure), 
+!     temperature, and appropriate species.  Below LAYTROP, the water
+!     vapor self-continuum is interpolated (in temperature) separately. 
+ 
+
+DO JLAY = 1, KLEV
+  DO JLON = KIDIA, KFDIA
+    IF (JLAY <= K_LAYTROP(JLON)) THEN
+      Z_SPECCOMB(JLAY) = P_COLH2O(JLON,JLAY) + STRRAT1*P_COLCO2(JLON,JLAY)
+      Z_SPECPARM = P_COLH2O(JLON,JLAY)/Z_SPECCOMB(JLAY)
+      Z_SPECPARM=MIN(P_ONEMINUS,Z_SPECPARM)
+      Z_SPECMULT = 8._JPRB*(Z_SPECPARM)
+      JS = 1 + INT(Z_SPECMULT)
+      Z_FS = MOD(Z_SPECMULT,1.0_JPRB)
+      IND0(JLAY) = ((K_JP(JLON,JLAY)-1)*5+(K_JT(JLON,JLAY)-1))*NSPA(4) + JS
+      IND1(JLAY) = (K_JP(JLON,JLAY)*5+(K_JT1(JLON,JLAY)-1))*NSPA(4) + JS
+      INDS(JLAY) = K_INDSELF(JLON,JLAY)
+
+      ZFS(JLAY)=Z_FS
+      IJS(JLAY)=JS
+
+
+!-- DS_000515
+!CDIR UNROLL=NG4
+      DO JG = 1, NG4
+!-- DS_000515
+
+        Z_FS=ZFS(JLAY)
+        JS=IJS(JLAY)
+!--jjm         
+!    FAC000 = (_ONE_ - FS) * FAC00(LAY)
+!    FAC010 = (_ONE_ - FS) * FAC10(LAY)
+!    FAC100 = FS * FAC00(LAY)
+!    FAC110 = FS * FAC10(LAY)
+!    FAC001 = (_ONE_ - FS) * FAC01(LAY)
+!    FAC011 = (_ONE_ - FS) * FAC11(LAY)
+!    FAC101 = FS * FAC01(LAY)
+!    FAC111 = FS * FAC11(LAY)
+!---
+
+        P_TAU(JLON,NGS3+JG,JLAY) = Z_SPECCOMB(JLAY) *    &
+     !-- DS_000515
+         & ((1. - Z_FS) *(P_FAC00(JLON,JLAY) * ABSA(IND0(JLAY)   ,JG) +   &
+         & P_FAC10(JLON,JLAY) * ABSA(IND0(JLAY)+ 9,JG) +   &
+         & P_FAC01(JLON,JLAY) * ABSA(IND1(JLAY)   ,JG) +    &
+         & P_FAC11(JLON,JLAY) * ABSA(IND1(JLAY)+ 9,JG))+   &
+         & Z_FS     *(P_FAC00(JLON,JLAY) * ABSA(IND0(JLAY)+ 1,JG) +   &
+         & P_FAC10(JLON,JLAY) * ABSA(IND0(JLAY)+10,JG) +   &
+         & P_FAC01(JLON,JLAY) * ABSA(IND1(JLAY)+ 1,JG) +   &
+         & P_FAC11(JLON,JLAY) * ABSA(IND1(JLAY)+10,JG))) + &
+     !     &(Z_FAC000 * ABSA(IND0(JLAY)   ,JG) +&
+     !     & Z_FAC100 * ABSA(IND0(JLAY)+ 1,JG) +&
+     !     & Z_FAC010 * ABSA(IND0(JLAY)+ 9,JG) +&
+     !     & Z_FAC110 * ABSA(IND0(JLAY)+10,JG) +&
+     !     & Z_FAC001 * ABSA(IND1(JLAY)   ,JG) +&
+     !     & Z_FAC101 * ABSA(IND1(JLAY)+ 1,JG) +&
+     !     & Z_FAC011 * ABSA(IND1(JLAY)+ 9,JG) +&
+     !     & Z_FAC111 * ABSA(IND1(JLAY)+10,JG))+&
+     !-- DS_000515
+         & P_COLH2O(JLON,JLAY) * &
+         & P_SELFFAC(JLON,JLAY) * (SELFREF(INDS(JLAY),JG) + &
+         & P_SELFFRAC(JLON,JLAY) *&
+         & (SELFREF(INDS(JLAY)+1,JG) - SELFREF(INDS(JLAY),JG)))&
+         & + P_TAUAERL(JLON,JLAY,4)  
+        PFRAC(JLON,NGS3+JG,JLAY) = FRACREFA(JG,JS) + Z_FS *&
+         & (FRACREFA(JG,JS+1) - FRACREFA(JG,JS))  
+      ENDDO
+    ENDIF
+
+    IF (JLAY > K_LAYTROP(JLON)) THEN
+      Z_SPECCOMB(JLAY) = P_COLO3(JLON,JLAY) + STRRAT2*P_COLCO2(JLON,JLAY)
+      Z_SPECPARM = P_COLO3(JLON,JLAY)/Z_SPECCOMB(JLAY)
+      Z_SPECPARM=MIN(P_ONEMINUS,Z_SPECPARM)
+      Z_SPECMULT = 4._JPRB*(Z_SPECPARM)
+      JS = 1 + INT(Z_SPECMULT)
+      Z_FS = MOD(Z_SPECMULT,1.0_JPRB)
+      IF (JS  >  1) THEN
+        JS = JS + 1
+      ELSEIF (Z_FS  >=  0.0024_JPRB) THEN
+        JS = 2
+        Z_FS = (Z_FS - 0.0024_JPRB)/0.9976_JPRB
+      ELSE
+        JS = 1
+        Z_FS = Z_FS/0.0024_JPRB
+      ENDIF
+      IND0(JLAY) = ((K_JP(JLON,JLAY)-13)*5+(K_JT(JLON,JLAY)-1))*NSPB(4) + JS
+      IND1(JLAY) = ((K_JP(JLON,JLAY)-12)*5+(K_JT1(JLON,JLAY)-1))*NSPB(4) + JS
+      ZFS(JLAY)=Z_FS
+      IJS(JLAY)=JS
+
+      Z_FS=ZFS(JLAY)
+      JS=IJS(JLAY)
+!--- jjm
+!  FAC000 = (_ONE_ - FS) * FAC00(LAY)
+!  FAC010 = (_ONE_ - FS) * FAC10(LAY)
+!  FAC100 = FS * FAC00(LAY)
+!  FAC110 = FS * FAC10(LAY)
+!  FAC001 = (_ONE_ - FS) * FAC01(LAY)
+!  FAC011 = (_ONE_ - FS) * FAC11(LAY)
+!  FAC101 = FS * FAC01(LAY)
+!  FAC111 = FS * FAC11(LAY)
+!------                   
+!CDIR UNROLL=NG4
+      DO JG = 1, NG4
+        P_TAU(JLON,NGS3+JG,JLAY) = Z_SPECCOMB(JLAY) *   &
+     !-- DS_000515
+         & ( (1. - Z_FS) *(P_FAC00(JLON,JLAY) * ABSB(IND0(JLAY)  ,JG) +   &
+         & P_FAC10(JLON,JLAY) * ABSB(IND0(JLAY)+6,JG) +   &
+         & P_FAC01(JLON,JLAY) * ABSB(IND1(JLAY)  ,JG) +    &
+         & P_FAC11(JLON,JLAY) * ABSB(IND1(JLAY)+6,JG))+   &
+         & Z_FS     *(P_FAC00(JLON,JLAY) * ABSB(IND0(JLAY)+1,JG) +   &
+         & P_FAC10(JLON,JLAY) * ABSB(IND0(JLAY)+7,JG) +   &
+         & P_FAC01(JLON,JLAY) * ABSB(IND1(JLAY)+1,JG) +   &
+         & P_FAC11(JLON,JLAY) * ABSB(IND1(JLAY)+7,JG)))   &
+     !     &(Z_FAC000 * ABSB(IND0(JLAY)   ,JG) +&
+     !     & Z_FAC100 * ABSB(IND0(JLAY)+ 1,JG) +&
+     !     & Z_FAC010 * ABSB(IND0(JLAY)+ 6,JG) +&
+     !     & Z_FAC110 * ABSB(IND0(JLAY)+ 7,JG) +&
+     !     & Z_FAC001 * ABSB(IND1(JLAY)   ,JG) +&
+     !     & Z_FAC101 * ABSB(IND1(JLAY)+ 1,JG) +&
+     !     & Z_FAC011 * ABSB(IND1(JLAY)+ 6,JG) +&
+     !     & Z_FAC111 * ABSB(IND1(JLAY)+ 7,JG))&
+     !-- DS_000515
+         & + P_TAUAERL(JLON,JLAY,4)  
+        PFRAC(JLON,NGS3+JG,JLAY) = FRACREFB(JG,JS) + Z_FS *&
+         & (FRACREFB(JG,JS+1) - FRACREFB(JG,JS))  
+      ENDDO
+    ENDIF
+  ENDDO
+ENDDO
+
+
+END SUBROUTINE RRTM_TAUMOL4

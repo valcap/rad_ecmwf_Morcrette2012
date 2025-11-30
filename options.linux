@@ -1,0 +1,15 @@
+# VPP option file
+CP_OPT = -I../include
+
+# configuration file for linux
+
+FC     = gfortran
+CC     = gcc
+
+# opzioni ottimizzate (altri param. sono default)
+# opzioni per ifort
+FFLAGS = -warn none -I ../module -vec-report0
+# opzioni per gfortran
+FFLAGS = -w -fallow-invalid-boz -I ../module
+
+###FFLAGS = -g -CU -CB -fpe0 -check all -traceback -assume byterecl -I ../module -vec-report0 # opzioni per debug

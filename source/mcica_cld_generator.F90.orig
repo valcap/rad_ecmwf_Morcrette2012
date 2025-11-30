@@ -1,0 +1,358 @@
+SUBROUTINE MCICA_CLD_GENERATOR &
+  &( PZF    , PAVG_CF, PAVG_QLW  , PAVG_QIW, PGLAT, PGLON, &
+  &  PRLC_CF, PRLC_CW, PSIGMA_QCW, &
+  &  KLON   , KIDIA   , KFDIA      , KLEV    , KNX_LOC , &
+  &  LDPPH     , LDMAXRAN       , &
+  &  PICEWCIN_S, PLIQWCIN_S     , KNCLDY)
+
+! --------------------------------------------------------------------
+! --------------------------------------------------------------------
+! Generate a NX column by KLEV layer subcolumns.
+! Method and model evaluation is described in:
+! Raisanen et al, 2004, Stochastic generation of subgrid-scale cloudy 
+! columns for large-scale models,
+! Quart. J. Roy. Meteorol. Soc., 2004 , 130 , 2047-2068
+! Input profiles must be from top of the model to the bottom as is the output.
+! --------------------------------------------------------------------   
+
+USE PARKIND1, ONLY : JPIM, JPRB
+
+USE YOE_McICA,ONLY : NMcI1, NMcI2, XCW
+
+!-- Mike's random number generator
+USE YOMCT3  , ONLY : NSTEP
+USE YOMDYN  , ONLY : TSTEP
+USE YOMRIP  , ONLY : NINDAT
+USE YOMCST  , ONLY : RDAY
+
+USE RANDOM_NUMBERS_MIX  , ONLY : RANDOMNUMBERSTREAM, UNIFORM_DISTRIBUTION
+!TYPE(randomNumberStream) :: YL_RANDOM_STREAM
+
+IMPLICIT NONE
+
+! This subroutine needs the array xcw, and dimensions of the array NMcI1 and NMcI2.
+! These are provided within YOE_McICA.
+
+! Note: KLEV    => Number of layers in GCM
+!       KNX_LOC => Number of columns to generate
+
+
+! PARAMETERS
+
+
+REAL(KIND=JPRB), PARAMETER :: &
+  & CUT = 0.001 ! Cutoff for cloud amount
+
+! KNX_LOC, LDPPH, LDMAXRAN should be passed in somehow not defined as PARAMETERS
+
+!INTEGER(KIND=JPIM), PARAMETER :: &
+!  & KNX_LOC = 150       ! Number of subcolumns to generate
+
+!LOGICAL, PARAMETER :: &
+!  & LDPPH = .TRUE.,     & ! Switch for assuming cloud to be PPH (.TRUE.) or not (.FALSE.)
+!  & LDMAXRAN = .TRUE.     ! Switch for assuming cloud to be maximum-random overlap (.TRUE.) or not (.FALSE.)
+
+!----------------------------------------------------------------------------------
+
+
+! INPUT DATA
+
+INTEGER(KIND=JPIM), INTENT(IN) :: KNX_LOC
+LOGICAL, INTENT(IN) :: LDPPH, LDMAXRAN
+
+REAL(KIND=JPRB), INTENT(IN) :: &
+  & PZF(KLON,KLEV),        & ! Full-level (layer midpoint) altitude  (km)
+  & PAVG_CF(KLON,KLEV),    & ! Cloud fraction for each layer         (unitless)
+  & PAVG_QLW(KLON,KLEV),   & ! Cloud mean liquid water mixing ratio  (g/m^3)
+  & PAVG_QIW(KLON,KLEV),   & ! Cloud mean ice mixing ratio           (g/m^3)
+  & PSIGMA_QCW(KLON,KLEV), & ! Normalized cloud condensate std. dev. (unitless) 
+  & PRLC_CF(KLON,KLEV),    & ! Cloud fraction decorrelation length   (km)
+  & PRLC_CW(KLON,KLEV),    & ! Cloud condensate decorrelation length (km)
+  & PGLAT(KLON),           & ! Latitude
+  & PGLON(KLON)              ! Longitude
+
+INTEGER(KIND=JPIM), INTENT(IN) :: & ! Counters and array sizes
+  & KLON,                  & ! Length of latitude band
+  & KIDIA,                 & ! Starting index for latitude
+  & KFDIA,                 & ! Ending point for latitude
+  & KLEV                     ! Number of layers
+
+
+! OUTPUT DATA
+
+
+REAL(KIND=JPRB),INTENT(OUT) :: &
+  & PICEWCIN_S(KLON,KLEV,KNX_LOC), & ! Column ice water mixing ratio profile    (g/m^3)
+  & PLIQWCIN_S(KLON,KLEV,KNX_LOC)    ! Column liquid water mixing ratio profile (g/m^3)
+
+INTEGER(KIND=JPIM), INTENT(OUT) :: &
+  & KNCLDY(KLON)                   ! Number of cloudy subcolumns
+
+
+! LOCAL DATA
+
+
+INTEGER(KIND=JPIM) :: &
+  & IL,        & ! Counter over KLON GCM columns
+  & I,         & ! Counter
+  & JK,        & ! Counter over KLEV vertical layers
+  & I_TOP(KLON),     & ! Index of top most cloud layer
+  & I_BASE(KLON),    & ! Index of lowest cloud layer
+  & IND1,      & ! Index in variability calculation 
+  & IND2,      & ! Index in variability calculation
+  & I_LOC(KLON)   ! Counter to place the new subcolumns into the arrays starting from the front
+
+REAL(KIND=JPRB) :: &
+  & ZALPHA(KLON,KLEV), & ! Fraction of maximum/random cloud overlap
+  & ZRCORR(KLON,KLEV), & ! Fraction of maximum/random cloud condensate overlap
+  & ZRIND1,            & ! Real index in variability calculation
+  & ZRIND2,            & ! Real index in variability calculation
+  & ZCW                  ! Ratio of cloud condensate mixing ratio for this cell to its layer cloud-mean value
+
+REAL(KIND=JPRB) :: & ! Random number vectors
+  & ZX(KLON),  &
+  & ZY(KLON),  &
+  & ZX1(KLON), &
+  & ZY1(KLON), &
+  & ZX2(KLON), &
+  & ZY2(KLON)  
+
+REAL(KIND=JPRB) :: & ! Random number vectors
+  & ZZX (KLEV,KLON), &
+  & ZZY (KLEV,KLON), &
+  & ZZX1(KLEV,KLON), &
+  & ZZY1(KLEV,KLON), &
+  & ZZX2(KLEV,KLON), &
+  & ZZY2(KLEV,KLON)
+
+LOGICAL :: LL_CLD(KLON)  ! Flag if cloudy subcolumn was generated
+
+TYPE(randomNumberStream) :: YL_RANDOM_STREAM(KLON)
+INTEGER(KIND=JPIM) :: ISEED, ITIM, IDAY
+
+REAL(KIND=JPRB) :: ZTMP1, ZTMP2
+INTEGER(KIND=JPIM) :: ISTOP
+
+
+#include "fcttim.h"
+!---------------------------------------------------------
+
+! Create the relevant seed from date and time
+! get the starting day and number of minutes since start
+IDAY=NDD(NINDAT)
+ITIM=NINT(NSTEP*TSTEP/60._JPRB)
+!Print 9001,NINDAT,NSTEP,TSTEP,IDAY,ITIM
+!9001 format(1x,'Generator_1 ',2I10,F8.1,2I10)
+
+
+! Initialize the arrays
+
+DO IL = KIDIA, KFDIA
+  I_LOC(IL) = 1
+  LL_CLD(IL) = .FALSE.
+ENDDO
+
+! Find uppermost cloudy layer
+
+DO IL = KIDIA, KFDIA
+  DO JK=1,KLEV
+    I_TOP(IL) = JK
+    IF (PAVG_CF(IL,JK) > CUT) EXIT
+  ENDDO ! JK
+ENDDO ! IL
+
+
+! Find lowermost cloudy layer
+
+DO IL = KIDIA, KFDIA
+  DO JK=KLEV,1,-1
+    I_BASE(IL) = JK
+    IF (PAVG_CF(IL,JK) > CUT) THEN
+      EXIT
+    ENDIF
+  ENDDO ! JK
+ENDDO ! IL
+
+! Calculate overlap factors ZALPHA for cloud fraction and ZRCORR for cloud
+! condensate based on layer midpoint distances and decorrelation depths
+
+ISTOP=0
+
+ZALPHA=0.0_JPRB
+ZRCORR=0.0_JPRB
+
+DO IL = KIDIA, KFDIA
+  DO JK=I_TOP(IL),I_BASE(IL)-1
+    IF (PRLC_CF(IL,JK) > 0.0) THEN
+      ZTMP1 = (PZF(IL,JK) - PZF(IL,JK+1)) / PRLC_CF(IL,JK)
+!      IF (ZTMP1 < 0._JPRB .OR. ZTMP1 > 200._JPRB) THEN
+!        ISTOP=ISTOP+1
+!      ENDIF
+!      ZALPHA(IL,JK) = EXP(-(PZF(IL,JK) - PZF(IL,JK+1)) / PRLC_CF(IL,JK))
+      ZALPHA(IL,JK) = EXP(-ZTMP1)
+    ELSE
+      ZALPHA(IL,JK) = 0.0
+    ENDIF
+    IF (PRLC_CW(IL,JK) > 0.0) THEN
+      ZTMP2 = (PZF(IL,JK) - PZF(IL,JK+1)) / PRLC_CW(IL,JK)
+!      IF (ZTMP2 < 0._JPRB .OR. ZTMP2 > 200._JPRB) THEN
+!        ISTOP=ISTOP+1
+!      ENDIF
+!      ZRCORR(IL,JK) = EXP(-(PZF(IL,JK) - PZF(IL,JK+1)) / PRLC_CW(IL,JK))
+      ZRCORR(IL,JK) = EXP(-ZTMP2)
+    ELSE
+      ZRCORR(IL,JK) = 0.0
+    ENDIF
+!    IF (ISTOP > 0) THEN
+!      PRINT 9002,ISTOP,IL,JK,ZTMP1,ZTMP2,PZF(IL,JK),PZF(IL,JK+1),PRLC_CF(IL,JK),PRLC_CW(IL,JK),ZALPHA(IL,JK),ZRCORR(IL,JK)
+!9002  FORMAT(1x,'CldGen:',3I4,10E12.5)
+!    ENDIF
+  ENDDO ! JK
+ENDDO ! IL
+
+DO IL = KIDIA, KFDIA
+    ISEED=NINT( PGLON(IL)+PGLAT(IL)+ITIM+IDAY )
+    CALL SETRAN ( ISEED, YL_RANDOM_STREAM(IL) )
+ENDDO
+!Print 9003,ISEED,KIDIA,KFDIA,(PGLON(IL),PGLAT(IL),IL=KIDIA,KFDIA)
+!9003 format(1x,'Generator_3 ',I16,2I5,(24F6.1))
+!!Print 9004,(YL_RANDOM_STREAM(IL),IL=KIDIA,KFDIA)
+!!9004 format(1x,'Generator_4 ',10I16)
+
+DO I=1,KNX_LOC
+
+  DO IL = KIDIA, KFDIA
+!    ISEED=NINT( PGLON(IL)+PGLAT(IL)+ITIM+IDAY+ I )
+!    CALL SETRAN ( ISEED, YL_RANDOM_STREAM )
+    CALL UNIFORM_DISTRIBUTION (ZZX(1:KLEV,IL) , YL_RANDOM_STREAM(IL) )
+    CALL UNIFORM_DISTRIBUTION (ZZY(1:KLEV,IL) , YL_RANDOM_STREAM(IL) )
+    CALL UNIFORM_DISTRIBUTION (ZZX1(1:KLEV,IL), YL_RANDOM_STREAM(IL) )
+    CALL UNIFORM_DISTRIBUTION (ZZY1(1:KLEV,IL), YL_RANDOM_STREAM(IL) )
+    CALL UNIFORM_DISTRIBUTION (ZZX2(1:KLEV,IL), YL_RANDOM_STREAM(IL) )
+    CALL UNIFORM_DISTRIBUTION (ZZY2(1:KLEV,IL), YL_RANDOM_STREAM(IL) )
+  ENDDO
+
+!! Need to check if a cloudy subcolumn was generated
+!  DO IL = KIDIA, KFDIA
+!    IF (LL_CLD(IL)) THEN
+!      I_LOC(IL) = I_LOC(IL) + 1
+!      LL_CLD(IL) = .FALSE.
+!    ENDIF
+!  ENDDO
+
+! Generate all subcolumns for latitude chain
+
+DO IL=KIDIA,KFDIA
+  DO JK = I_TOP(IL), I_BASE(IL)
+
+! Generate all of the needed random numbers
+
+    IF (JK == I_TOP(IL)) THEN
+!      CALL RANDOM_NUMBER(ZX)
+!      CALL RANDOM_NUMBER(ZY)
+!     CALL UNIFORM_DISTRIBUTION ( ZX, YL_RANDOM_STREAM )
+!     CALL UNIFORM_DISTRIBUTION ( ZY, YL_RANDOM_STREAM )
+      ZX(IL)=ZZX(JK,IL)
+      ZY(IL)=ZZY(JK,IL)
+    ENDIF
+    
+!    CALL RANDOM_NUMBER(ZX1)
+!    CALL RANDOM_NUMBER(ZY1)
+!   CALL UNIFORM_DISTRIBUTION ( ZX1, YL_RANDOM_STREAM )
+!   CALL UNIFORM_DISTRIBUTION ( ZY1, YL_RANDOM_STREAM )
+    ZX1(IL)=ZZX1(JK,IL)
+    ZY1(IL)=ZZY1(JK,IL)
+
+!    CALL RANDOM_NUMBER(ZX2)
+!    CALL RANDOM_NUMBER(ZY2)
+!   CALL UNIFORM_DISTRIBUTION ( ZX2, YL_RANDOM_STREAM )
+!   CALL UNIFORM_DISTRIBUTION ( ZY2, YL_RANDOM_STREAM )
+    ZX2(IL)=ZZX2(JK,IL)
+    ZY2(IL)=ZZY2(JK,IL)
+            
+
+! Maximum-random overlap
+      IF (LDMAXRAN) THEN
+        IF (ZX(IL) < 1.0_JPRB - PAVG_CF(IL,JK-1)) THEN !It is clear above
+          ZX(IL) = ZX1(IL) * (1.0_JPRB - PAVG_CF(IL,JK-1))
+          ZY(IL) = ZY1(IL)
+        ENDIF
+! Generalized overlap
+      ELSE
+        IF (ZX1(IL) > ZALPHA(IL,JK-1)) ZX(IL) = ZX2(IL)
+        IF (ZY1(IL) > ZRCORR(IL,JK-1)) ZY(IL) = ZY2(IL)
+      ENDIF
+
+! Treatment of cloudy cells
+      IF (ZX(IL) > 1.0_JPRB - PAVG_CF(IL,JK)) THEN ! Generate cloud in this layer
+
+        IF (LDPPH) THEN ! Homogeneous clouds
+          ZCW = 1.0_JPRB
+        ELSE
+! Horizontally variable clouds:
+! Determine ZCW = ratio of cloud condensate miximg ratio QC for this cell to
+! its mean value for all cloudy cells in this layer.
+! Use bilinear interpolation of ZCW tabulated in array XCW as a function of
+!    * cumulative probability Y
+!    * relative standard deviation PSIGMA
+! Take care that the definition of ZRIND2 is consistent with subroutine
+! TABULATE_XCW
+
+          ZRIND1 = ZY(IL) * (NMcI1 - 1) + 1.0_JPRB
+          IND1  = MAX(1, MIN(INT(ZRIND1), NMcI1-1))
+          ZRIND1 = ZRIND1 - IND1
+          ZRIND2 = 40.0_JPRB * PSIGMA_QCW(IL,JK) - 3.0_JPRB
+          IND2  = MAX(1, MIN(INT(ZRIND2), NMcI2-1))
+          ZRIND2 = ZRIND2 - IND2
+
+          ZCW = (1.0-ZRIND1) * (1.0_JPRB - ZRIND2) * XCW(IND1,IND2) &
+            &               + (1.0_JPRB - ZRIND1) * ZRIND2       * XCW(IND1,IND2+1) &
+            &               + ZRIND1 * (1.0_JPRB - ZRIND2)       * XCW(IND1+1,IND2) &
+            &               + ZRIND1 * ZRIND2             * XCW(IND1+1,IND2+1) 
+        ENDIF
+
+! A horizontally constant IWC/LWC ratio is assumed for each layer so far
+! -- BUG all cloudy bits on same spectral side
+!        PLIQWCIN_S(IL,JK,I_LOC(IL)) = ZCW * PAVG_QLW(IL,JK)
+!        PICEWCIN_S(IL,JK,I_LOC(IL)) = ZCW * PAVG_QIW(IL,JK)
+        PLIQWCIN_S(IL,JK, I ) = ZCW * PAVG_QLW(IL,JK)
+        PICEWCIN_S(IL,JK, I ) = ZCW * PAVG_QIW(IL,JK)
+
+! Note that a cloud subcolumn was generated
+        LL_CLD(IL)             = .TRUE.
+      ENDIF
+               
+    ENDDO                ! JK
+  ENDDO              ! IL
+
+!-- JasonC 20060110 (moved from start to end of loop over I)
+! Need to check if a cloudy subcolumn was generated
+  DO IL = KIDIA, KFDIA
+    IF (LL_CLD(IL)) THEN
+      I_LOC(IL) = I_LOC(IL) + 1
+      LL_CLD(IL) = .FALSE.
+    ENDIF
+  ENDDO
+
+ENDDO                  ! I
+
+! Record the number of cloudy subcolumns generated
+! The variable KNCLDY can be used later to randomly select 
+! only cloudy columns
+DO IL = KIDIA, KFDIA
+  KNCLDY(IL) = I_LOC(IL)-1
+ENDDO ! IL
+
+!print 9701,KNX_LOC,(KNCLDY(IL),IL=KIDIA,KFDIA)
+!9701 format(1x,'mcgen1 ',I6,1X,50I4)
+!IL=KIDIA
+!do JK=I_TOP(IL),I_BASE(IL)
+!  print 9702,(PLIQWCIN_S(IL,JK,I),I=1,KNX_LOC,8)
+!  print 9703,(PICEWCIN_S(IL,JK,I),I=1,KNX_LOC,8)
+!9702 format(1x,'mcgen2 ',20E12.4)
+!9703 format(1x,'mcgen3 ',20E12.4)
+!enddo
+
+
+!---------------------------------------------------------
+END SUBROUTINE MCICA_CLD_GENERATOR

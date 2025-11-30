@@ -1,0 +1,3 @@
+# ifort -c -g -CU -CB -fpe0 -check all -traceback -assume byterecl -I ../include   *.F90
+
+ifort -c -O1 -I ../include   *.F90

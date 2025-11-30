@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# con argomento 'clean' ripulisce eseguibili
+
+#set -x
+
+export ARCH=linux
+
+DIR=`pwd`
+BASE=`pwd`
+OPTS="-I $BASE/include *.F90"
+
+BINDIR=$BASE/bin
+
+MAKEMAKE21=$BINDIR/makemake_21
+SFMAKEDEP=$BINDIR/sfmakedepend
+
+case "$1" in
+    clean)
+         echo "Cleaning...."
+         find $BASE -type f -name "*.o" -exec rm -f {} \;
+	 find $BASE -type f -name "*.mod" -exec rm -f {} \;
+         find $BASE -type f -name "*.lst" -exec rm -f {} \;
+         rm -f $BASE/libecmwf_rad.a;
+	 echo "Done"
+	 exit 0
+	;;
+esac
+
+echo "compilo in module_aux..."
+
+cd $BASE/module_aux
+$MAKEMAKE21 $ARCH
+$SFMAKEDEP $OPTS
+make
+
+cp *.mod $BASE/module   # necessario per evitare "conflitti"
+
+echo "compilo in module..."
+
+cd $BASE/module
+$MAKEMAKE21 $ARCH
+$SFMAKEDEP $OPTS
+make
+
+echo "compilo in source..."
+
+cd $BASE/source
+$MAKEMAKE21 $ARCH
+make
+
+ifort -c -O0 -warn none -I ../module  -I ../module_aux -I ../include mcica_cld_generator.F90 # unica routine che deve essere ricompilata con -O0!
+
+echo "Create the library"
+
+cd $BASE
+ar -r libecmwf_rad.a source/*.o module/*.o module_aux/*.o  # utile includere module_aux/*.o altrimenti occorre includ. in compilazione
+ranlib libecmwf_rad.a                                      # crea un archivio di libreria che facilita il link

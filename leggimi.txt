@@ -1,0 +1,219 @@
+Radiaz. ECMWF - versione standalone Morcrette genn. 2012
+
+Routines cambiate in "module" (vecchia e nuova versione):
+in parrrtm.F90  (corretto JPLAY da 100 a 300 per permettere più livelli)
+in parsrtm.F90  (corretto JPLAY da 100 a 300 per permettere più livelli)
+in parrtm1d.F90 (corretto JP_LEV da 100 a 300 per permettere più livelli)
+Successivamente messo 150 al posto di 300 nel moduli sopra.
+
+-----------------------------------------------------------------------------
+Routines cambiate in source (vecchia versione):
+
+olw.F90               - non esiste nella nuova radiaz.
+rrtm_rtrn1a_140gp.F90 - fatto cambiam. simile (iniz. variabile Z_TRNCLD)
+suswn.F90             - la nuova e' molto diversa - event. controllare i numeri
+                        cambiati
+olwu.F90              - non esiste nella nuova radiaz.
+rrtm_taumol2.F90      - c'e' nella nuova ma e' molto cambiata
+swclr.F90             - non esiste nella nuova radiaz.
+radlsw.F90            - c'e' nella nuova ma e' molto cambiata e la modifica era
+                        irrilevante
+suecaec.F90           - non esiste nella nuova radiaz. - tuttavia verif. se ci
+                        sono variabili non definite compilando con le opzioni di
+                        debug e vedere come sono def. gli aerosol vulcanici negli
+                        anni recenti.
+                        Andrea: nella nuova suecaec.F90, successivamente inviata da Morcrette,
+                        il vettore che contiene gli anni e' dimensionato fino al 2100 -
+                        tuttavia formalmente erano def. valori mensili solo fin al 2010 -
+                        aggiunta in fondo la subroutine PART8 con def. anni dal 2011 al 2017
+swr.F90               - non esiste nella nuova radiaz.
+
+---------------------------------------------------------------------------
+
+Problemi riscontrati e correzioni (7/2/2012):
+
+- manca definizione aerosol tipi da 2 a 5 (mancano le routines suecae... che li calcolano)
+- parentesi non bilanciate in un format e direttive non in colonna 1 in aer_rad.F90 e su_gchclim.F90
+- concatenazione di stringhe in istruz. STOP non ammessa da ifort
+- rimosso parkind.F90 da source e anche da module perche' e' duplicato in module_aux (lasciato solo in questo)
+- errori fortran banali in su_gozoclim.F90 in su_gco2clim.F90 (istruz. non in colonna 1)
+- KSW e altre variabili simili, sono definite in main.F90 e passate come argomenti in rad1driv.F90,
+  ma poi sono ridefinite dentro questa routine
+- lanciando come suggerito nell'email di Morcrette il file compilato ECMWF_RAD_35R2c si ha segmentation fault.
+
+Il 8/2 Morcrette ha inviato le routine mancanti per l'aerosol (quelle nella directory suecae_routines,
+poi copiate in source). Inoltre messe le chiamate a tali subroutine in rad1driv.F90: in tal modo crea
+tutti i tipi di aerol., ma da' ancora segment. fault.
+Creato allora COMPIL_3_4_debug (con opzioni di debugging). Risultato:
+Run-Time Check Failure. The variable 'rad1driv_$JPGPT' is being used without being defined.
+
+Morcrette asserisce che questa variabile JPGT e' definita in module/parrrtm.F90 e module/parsrtm.F90,
+ma tali moduli non sono inclusi dal programma rad1driv.F90! Tuttavia questa variabile in rad1driv.F90
+e' usata solo per una stampa, per cui commentata tale stampa.
+
+Poi ricompilato in module, module_aux e source con le opzioni di debug (usando COMPILE_..._debug).
+Si lancia  ECMWF_RAD_35R2c dando i seg. input (v. email Morcrette):
+
+7
+3
+0
+TRO_TQ_CFIL_SurfToA
+
+al termine, si danno i comandi:
+gdb ECMWF_RAD_35R2c
+run
+a questo punto esce il messaggio:
+Program received signal SIGFPE, Arithmetic exception.
+0x00000000014e14cd in sucst (kulout=6, kdat=19990331, ksss=46800, kprintlev=1) at sucst.F90:152
+152     R1SA=REAL(1.0_JPRB/REAL(RA,KIND(1.0_JPRB)),KIND(R1SA))
+Il problema che RPLRADI (def. come variabile in module/yomdyncore.F90 e che corrsponde a "small planet factor" non viene definito da nessuna parte (dovrebbe valere 1.). Quindi ho modif. sucst.F90
+(definendo RA come raggio terrestre).
+Errore successivo:
+forrtl: severe (408): fort: (2): Subscript #2 of the array PALBD5 has value 7 which is greater than the upper bound of 6.
+Il problema deriva dal fatto che la seconda dim. di PALBD5 in rad1driv.F90 e' def. KSW, dove KSW viene
+sia passato da main.F90 (dove KSW=6) e sia modificato successivam. dentro rad1driv. Ho quindi definito
+KSW=14 in main.F90.
+Errore successivo:
+Program received signal SIGFPE, Arithmetic exception.
+0x0000000000565b79 in radlswr (kidia=1, kfdia=1, klon=1, klev=60, kmode=0, kaer=6, kaero=1,
+    prii0=1347.5259461091462, paer=..., paero=..., palbd=..., palbp=..., paph=..., pap=..., pccnl=...,
+    pccno=..., pgelam=..., pgemu=..., pco2=..., pch4=..., pn2o=..., pno2=..., pc11=..., pc12=..., pc22=...,
+    pcl4=..., pclfr=..., pdp=..., pemis=..., pemiw=..., plsm=..., pmu0=..., pozon=..., pq=..., pqiwp=...,
+    pqlwp=..., pqs=..., pqrain=..., praint=..., pth=..., pt=..., pts=..., pnbas=..., pntop=..., pemit=...,
+    pfct=..., pflt=..., pfcs=..., pfls=..., pfrsod=..., psudu=..., puvdf=..., pparf=..., pparcf=..., ptincf=...)
+    at radlswr.F90:525
+525     ZDefRe = 1.0_JPRB / ZRefDe
+
+Di conseguenza modificate radlsw.F90 e radlswr.F90, definendo RRe2De come indicato nell'email di Morcrette
+(RRe2De=0.64952 corresponding to elongated cylinders).
+
+Dopo queste modifiche, esegue fino in fondo, ma solo avendo compilato con le opzioni di debug.
+Compilando solo con le opzioni originali di Morcrette (ma usando ifort) dà ancora segmentation fault.
+Invece gira compilando con -O0 (ma non come -O1). Non serve compilare solo rad1driv.F90 con -O0.
+Compilare rad1driv.F90 con -r8 o senza non fa differenza.
+Le routines in module_aux e module si possono compilare senza opzioni di ottimizz. (equiv. a -O2).
+Prova: compilato in source con -ipo e senza opz. di ottimizz.: ha impiegato più di 2 ore, dando
+messaggi che per le seg. routines si abbassava automat. il livello di ottimizz.:
+
+rrtm_kgb3.F90
+rrtm_kgb4.F90
+rrtm_kgb5.F90
+srtm_kgb28.F90
+srtm_kgb21.F90
+srtm_kgb17.F90
+su_mcica.F90
+suecaec.F90
+
+Con questa compilazione il run non ha dato errore.
+
+Invece compilando con -ip invece che -ipo compila velocemente, non dà i messaggi di abbassamento di
+ottimizz. ma dà ancora segmentation fault in esecuzione.
+
+Provato a compilare le routines dell'elenco sopra a parte, con -O0, e la altre senza ottim., ma dà ancora segm. fault.
+Lo stesso anche compilando a parte tutte le routines rrtm_kgb* e srtm_kgb*.
+Quindi l'unica via per provare un'ottimizzazione (cioe' evitare -O0) e' quella di compilare con -ipo,
+ma va verificato che sia effettivamente efficace!
+
+Nella directory morcrette_2012_prova versione che usa il makeall della vecchia versione e crea una libreria,
+compilando alla fine main.F90 estratto da source (chiama rad1driv.F90 lasciato in source).
+
+Verificato che ozono e vari aerosol sono identici alla vecchia versione (ozono ha ancora problema con griglia ruotata,
+con long. funz. dell'indice x!!!).
+
+Non gira l'interfaccia bolam (programma bolam_newrad.F90, lanciato - anche col debugger - da bolam_newrad.run)
+- dà segm. fault - il problema è probabilmente legato a dimensioni errate nelle chiamate alle routines,
+a partire da RADLSWR: in pratica  esegue solo con il secondo argom. (di radlswr) meno il primo argom. < 10.
+
+Altro problema: girando bolam_newrad.F90 e chiamando la radlswr a gruppi di 10 (per circuire il problema sopra),
+risulta che il calcolo dell'emissione infrarossa al suolo e' corretto (praticam. identico alla vecchia versione),
+mentre si ottiene errore di segm. fault se l'ora di input non e' notturna, ossia se la rad. visibile e' < 0!
+
+Il 1 marzo: sostituiti i dimensionamenti del vettore INDEX nelle seg. routines (tutte quelle dove compare):
+srtm_reftra.F90
+srtm_spcvrt_mcica.F90
+srtm_srtm_224gp_mcica.F90
+srtm_vrtqdr.F90
+Invece che INDEX(KIDIA:KFDIA) è stato dimensionato INDEX(1:2000) -
+in tal modo si rimedia ad un errore che avviene solo sul visibile (quindi per ore del giorno in cui almeno una
+porzione del dominio riceve luce solare), sempre pero' con la chiamata a gruppi di 10 punti in longitudine).
+In questo modo sembra funzionare (come flussi radiativi ir e vis al suolo). Da un confronto con la vecchia versione
+risultano piccole differenze col cielo sereno (un po' più sulla neve: controllare la def. dell'albedo) e con differenze
+meno trascurabili in presenza di nubi (le nubi sembrano meno opache nella nuova versione).
+Resta da verif. la radiaz. nell'atmosfera libera.
+Rimane il problema di eccessiva lentezza, dovuta solo in parte alle chiamate con il dominio spezzettato nei
+gruppi di 10, ma soprattutto per il fatto che occorre compilare con -O0 (v. anche commenti sopra: riprovare con
+opzione -ipo?).
+
+Promemoria per lettera a Morcrette:
+
+1. non funziona rad. IR se vettori in input dimens. > 10 - non è un problema di radaca ma di radlswr.
+2. il visibile non funziona se non dopo aver ridimensionato il vettore INDEX nelle routines dove compare (v. sopra).
+   Se KIDIA diverso da 1, INDEX smatricia.
+3. I tempi sembrano lunghi (v. sopra).
+4. Verif. le tendenze di T in atmosfera libera.
+-------------------------------------------------------------------------------
+
+Provato quindi a ricompilare con -ipo (senza opz. di ottimizz.) con ifort 12.1 (in prova): a differenza che con la
+versione ifort 11.1, compila rapidamente, ma all'esecuz. dice che non trova routines della libreria
+(forse va compilato anche bolam con la stessa opzione?). Probabilmente qualcosa non ha funzionato nella compilazione.
+Riprovato con -ip (sempre con ifort 12.1) e senza -ip ma con -O1: da' sempre segm. fault.
+Invece compilando con opz. di debug (tra cui -g) e contempor. con -O2 esegue senza dare errore (dal manuale sembrerebbe
+che -g non eliminasse necessariamente l'opzione -O2).
+
+Altro problema: le tendenze di T dovute ai flussi in atmosfera danno problemi dovuti alle nubi (fcloud) a livelli alti.
+Mettendo sia qcw che qci a 1.e-4 e fcloud a 0.7 ovunque, il problema di bande è evidente. L'orientamento di tali bande
+non e' ovvio, perche' e' lo stesso per il vis. e infrarosso.
+Origine del problema: funz. random con seed che è funz. della somma di lat. e lon. (oltre che della data!), definite in
+mcica_cld_generator.F90.
+
+Il problema persiste anche forzando numeri non random.
+Invece il problema scompare mettendo nmcica=0, il che esclude il calcolo Montecarlo sia per il visibile
+che per l'infrarosso. In tal caso la radiaz. gira per gruppi fino ad un max. di 90 punti (invece di 10,
+ma non da 1 a nlon - nell'esempio nlon=190). Inoltre gira anche compilando senza -O0 (in pratica con -O2)
+ed e' molto più veloce!
+Verificato poi che il limite di 90 punti puo' essere superato o aumentando lo stacksize (arriva ad almeno 190 punti
+con stacksize = 600000) oppure compilando la radiaz. con l'opzione -heap-arrays (ma vedi nota sotto -
+comunque non serve usarla anche per compilare bolam).
+Nel caso invece in cui si usa nmcica=2 (uso del metodo Montecarlo), rimane la necessità di compilare con -O0, il che
+implica grande lentezza. Tuttavia in tal caso con stacksize grande il limite di 10 punti si "rilassa" ad un numero un
+po' maggiore (ordine 20). Se invece anche in tal caso si compila con -heap-arrays, gira fino a 190 punti (ma migliora
+molto poco la velocità).
+
+I problemi di velocità dipendono sia dalla opzione di compilazione (nel caso mcica=0, c'e' circa un fattore 2 tra compil.
+standard e compil. con -O0), ma nel caso -O0 e con mcica=2 i tempi si allungano di oltre un fattore 1.5 ulteriore.
+Successivamente Piero ha verificato che l'unica routine che va compilata con -O0 e' la subroutine mcica_cld_generator.F90.
+Ha anche verificato che è megio avere uno stacksize grande ma non usare l'opzione di compilazione -heap-arrays in quanto
+GLOBO non girava.
+
+E' stata fatta una modifica ai dimensionamenti delle matrici P_ABSS1 e P_TASF1 nella routine rrtm_rtrn1a_140gp.F90.
+Ora tali matrici sono dimensionate 2-D invece che 3-D. Non si trattava di un vero errore, ma come era originalmente
+c'era un indice che usciva dai boundaries e che veniva segnalato dal debugger. Qundi la modifica ha solo l'effetto di
+permettere al debugger di procedere.
+
+Il 9/3 (dopo terza email Morcrette) fatti esp. con nubi unif. e diversi param. di fcloud. Per valori intermedi (es. 0.5 o 0.7)
+si vedono i problemi di discontinuità nel caso nmcica=2. Tuttavia anche nel caso nmcica=0 compare qualche problema di discont.,
+anche se meno evidente. Tali problemi sembrano essere dovuti alle coastline: non sono associati a tskin ma a fmask, perche' le
+nubi sono trattate diversamente in funzione della fmask).
+
+PROBLEMA: non appare nemmeno sul visibile l'effetto dell'albedo della neve!
+
+Occorre controllare aerosol vulcanico (quali valori effettivi usa lo schema all'interno).
+Controllare anche i flag di input che scelgono le varie opzioni ad es. per il tipo di algoritmi per il calcolo delle nubi
+(confr. con la versione vecchia).
+
+L'unica routine che va compilata con -O0 e' la subroutine mcica_cld_generator.F90. Aggiunta la compilazione a parte di tale
+routine in makeall.
+
+La compilaz. per girare bolam con la nuova radiaz. completa richiede che non sia messo -ip, altrimenti succede che il bolam
+va all'infinito alla prima chiamata della radiaz., ma questo succede solo con mcica=0
+
+Verificato che le differenze con la vecchia versione non sono riconducibili all'uso di T2 invece di TSKIN in pth5(nlev+1),
+in quanto nella vecchia radiazione fa poca differenza usare T2 o TSKIN (almeno di giorno).
+
+Chiesti a Morcrette (22/3) chiarimenti su:
+1. uso della def. di quale T mettere in pth5(nlev) (risposta: come volete)
+2. se si puo' tener conto di neve (e pioggia) in atmosfera (event. aggiungendo a cloud ice e water)
+   (risposta: attualmente non sono previsti cloud water e cloud ice).
+3. se si puo' usare un numero di canali < 14-16 (risposta: non e' consigliabile - comunque non e' facile perche' i dimensionamenti sono def. anche dentro le subroutines).
+4. se ci sono problemi relativi a calcolo su griglie "coarse" (risposta: no).
+

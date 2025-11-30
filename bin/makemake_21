@@ -1,0 +1,55 @@
+#!/bin/bash
+# crea il Makfile 
+#set -x
+
+PLATFORM=$1
+TMP=/tmp
+SEDFILE=$TMP/makesedfil.$$
+if [ "${PLATFORM}" = "" ]
+then
+   PLATFORM=sgi
+fi
+#
+if [ "${PLATFORM}" = "sgi" ] || [ "${PLATFORM}" = "linux" ]
+then
+
+echo '1,$ s/$/ \\/' > ${SEDFILE}
+echo '$ s/ \\//' >> ${SEDFILE}
+#
+DIR=`pwd`
+BDIR=`basename ${DIR}`
+#
+cat > Makefile << EOF
+IFS	=	${BDIR}.a
+
+include ../options.\$(ARCH)
+
+SOURCE	=\\
+EOF
+
+/bin/ls *.* | fmt | sed -f ${SEDFILE} >> Makefile
+
+cat >> Makefile << EOF
+
+OBJECTS1	=	\$(SOURCE:.f=.o)
+OBJECTS2	=	\$(SOURCE:.F90=.o)
+OBJECTS = \$(OBJECTS1) \$(OBJECTS2)
+
+.SUFFIXES:
+.SUFFIXES:	.o .f .F90
+
+.f.o :
+	\$(FC) -c \$(FFLAGS) \$(CP_OPT) \$*.f
+.F90.o :
+	\$(FC) -c \$(FFLAGS) \$(CP_OPT) \$*.F90
+
+all:	\$(OBJECTS)
+	touch ${BDIR}.a
+
+clean:
+	 rm -f \$(OBJECTS)
+EOF
+
+fi
+
+rm -f $SEDFILE

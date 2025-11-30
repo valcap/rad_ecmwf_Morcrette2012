@@ -1,0 +1,66 @@
+
+USE PARKIND1  ,ONLY : JPIM     ,JPRB
+
+IMPLICIT NONE
+
+! Used by "hook" function
+! Altough initialized to TRUE it will be reset by first call to 
+
+SAVE
+PUBLIC
+
+
+INTERFACE
+#include "dr_hook_util.h"
+#include "dr_hook_util_multi.h"
+END INTERFACE
+
+! to test OPTIONAL-arguments with PRESENT()-function, since
+! it costs more.
+! However, this "unrolling" approach cannot be streched much more
+! than this without making number of member-functions too large
+! (i.e. all the possible permutations of these "optional" args;
+
+MODULE PROCEDURE &
+END INTERFACE
+
+CONTAINS 
+
+CHARACTER(LEN=*), INTENT(IN) :: CDNAME
+INTEGER(KIND=JPIM),        INTENT(IN) :: KSWITCH
+REAL(KIND=JPRB),        INTENT(INOUT) :: PKEY
+
+CHARACTER(LEN=*), INTENT(IN) :: CDNAME
+INTEGER(KIND=JPIM),        INTENT(IN) :: KSWITCH
+REAL(KIND=JPRB),        INTENT(INOUT) :: PKEY(:)
+
+
+
+CHARACTER(LEN=*), INTENT(IN) :: CDNAME,CDFILE
+INTEGER(KIND=JPIM),        INTENT(IN) :: KSWITCH
+REAL(KIND=JPRB),        INTENT(INOUT) :: PKEY
+
+CHARACTER(LEN=*), INTENT(IN) :: CDNAME,CDFILE
+INTEGER(KIND=JPIM),        INTENT(IN) :: KSWITCH
+REAL(KIND=JPRB),        INTENT(INOUT) :: PKEY(:)
+
+
+
+CHARACTER(LEN=*), INTENT(IN) :: CDNAME
+INTEGER(KIND=JPIM),        INTENT(IN) :: KSWITCH,KSIZEINFO
+REAL(KIND=JPRB),        INTENT(INOUT) :: PKEY
+
+CHARACTER(LEN=*), INTENT(IN) :: CDNAME
+INTEGER(KIND=JPIM),        INTENT(IN) :: KSWITCH,KSIZEINFO
+REAL(KIND=JPRB),        INTENT(INOUT) :: PKEY(:)
+
+
+
+CHARACTER(LEN=*), INTENT(IN) :: CDNAME,CDFILE
+INTEGER(KIND=JPIM),        INTENT(IN) :: KSWITCH,KSIZEINFO
+REAL(KIND=JPRB),        INTENT(INOUT) :: PKEY
+
+CHARACTER(LEN=*), INTENT(IN) :: CDNAME,CDFILE
+INTEGER(KIND=JPIM),        INTENT(IN) :: KSWITCH,KSIZEINFO
+REAL(KIND=JPRB),        INTENT(INOUT) :: PKEY(:)
+

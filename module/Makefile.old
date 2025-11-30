@@ -1,0 +1,45 @@
+IFS	=	module.a
+
+include ../options.$(ARCH)
+
+SOURCE	=\
+Makefile.old module.a parkind1.F90.orig parkind1.mod parrrtm.F90 \
+parrrtm.F90.orig parrtm1d.F90 parrtm1d.F90.orig parsrtm.F90 \
+parsrtm.F90.orig random_numbers_mix.mod type_gfls.F90 yoeaeratm.F90 \
+yoeaerc.F90 yoeaerd.F90 yoeaer.F90 yoeaermap.F90 yoeaermie.F90 \
+yoeaerop.F90 yoeaersnk.F90 yoeaersrc.F90 yoeaerst1.F90 yoeaersu.F90 \
+yoecld.F90 yoecldp.F90 yoedbug.F90 yoelw.F90 yoelwrad.F90 yoe_mcica.F90 \
+yoeozoc.F90 yoephli.F90 yoephy.F90 yoerad.F90 yoeradghg.F90 yoerdi.F90 \
+yoerdu.F90 yoerrta10.F90 yoerrta11.F90 yoerrta12.F90 yoerrta13.F90 \
+yoerrta14.F90 yoerrta15.F90 yoerrta16.F90 yoerrta1.F90 yoerrta2.F90 \
+yoerrta3.F90 yoerrta4.F90 yoerrta5.F90 yoerrta6.F90 yoerrta7.F90 \
+yoerrta8.F90 yoerrta9.F90 yoerrtab.F90 yoerrtbg2.F90 yoerrtftr.F90 \
+yoerrto10.F90 yoerrto11.F90 yoerrto12.F90 yoerrto13.F90 yoerrto14.F90 \
+yoerrto15.F90 yoerrto16.F90 yoerrto1.F90 yoerrto2.F90 yoerrto3.F90 \
+yoerrto4.F90 yoerrto5.F90 yoerrto6.F90 yoerrto7.F90 yoerrto8.F90 \
+yoerrto9.F90 yoerrtrf.F90 yoerrtrwt.F90 yoerrtwn.F90 yoesrta16.F90 \
+yoesrta17.F90 yoesrta18.F90 yoesrta19.F90 yoesrta20.F90 yoesrta21.F90 \
+yoesrta22.F90 yoesrta23.F90 yoesrta24.F90 yoesrta25.F90 yoesrta26.F90 \
+yoesrta27.F90 yoesrta28.F90 yoesrta29.F90 yoesrtaer.F90 yoesrtcop.F90 \
+yoesrtop.F90 yoesrtwn.F90 yoesw.F90 yoethf.F90 yoe_uvrad.F90 yomcst.F90 \
+yomct0.F90 yomct3.F90 yomdyncore.F90 yomdyn.F90 yomgc.F90 yomjfh.F90 \
+yomlun.F90 yomlun_ifsaux.mod yomphy3.F90 yomphy.F90 yomrandom_streams.F90 \
+yomrip.F90 yom_ygfl.F90 yophnc.F90 yos_sw.F90
+
+OBJECTS1	=	$(SOURCE:.f=.o)
+OBJECTS2	=	$(SOURCE:.F90=.o)
+OBJECTS = $(OBJECTS1) $(OBJECTS2)
+
+.SUFFIXES:
+.SUFFIXES:	.o .f .F90
+
+.f.o :
+	$(FC) -c $(FFLAGS) $(CP_OPT) $*.f
+.F90.o :
+	$(FC) -c $(FFLAGS) $(CP_OPT) $*.F90
+
+all:	$(OBJECTS)
+	touch module.a
+
+clean:
+	 rm -f $(OBJECTS)

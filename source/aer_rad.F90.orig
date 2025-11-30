@@ -1,0 +1,238 @@
+SUBROUTINE AER_RAD &
+ & ( KIDIA  , KFDIA  , KLON   , KTDIA, KLEV , KACTAERO, KNWAVL, KTWAVL, KSTART, KSTEP, &
+ &   PAP    , PAPH   , PQ     , PT   , PAERO, &
+ &   PTAUAER, POMGAER, PASYAER &
+ & )
+
+!*** * AER_RAD* - COMPUTATION OF AEROSOL OPTICAL THICKNESSES FOR RADIATION
+
+!**   INTERFACE.
+!     ----------
+!          *AER_RAD* IS CALLED FROM *CALLPAR*.
+
+!     AUTHOR.
+!     -------
+!        JEAN-JACQUES MORCRETTE  *ECMWF*
+
+!     MODIFICATIONS.
+!     --------------
+!        ORIGINAL : 2008-05-27
+
+!     PURPOSE.
+!     --------
+!     - computes absorption optical thicknesses at 550 nm and merge all 
+!       prognostic aerosols into 6 basic types (SS, DD, OM, BC, SU, Strat)
+!     
+!-----------------------------------------------------------------------
+
+USE PARKIND1  ,ONLY : JPIM     ,JPRB
+
+USE YOMCST    ,ONLY : RG
+USE YOEAEROP  ,ONLY : ALF_SU, ALF_OM, ALF_DD, ALF_SS, ALF_BC &
+                  & , ASY_SU, ASY_OM, ASY_DD, ASY_SS, ASY_BC &
+                  & , OMG_SU, OMG_OM, OMG_DD, OMG_SS, OMG_BC
+USE YOEAERSNK ,ONLY : RRHTAB
+USE YOEAERSRC ,ONLY : NMAXTAER, NTYPAER 
+USE YOMLUN    ,ONLY : NULOUT
+USE YOEDBUG   ,ONLY : KSTPDBG, NSTPDBG
+
+IMPLICIT NONE
+
+!-----------------------------------------------------------------------
+
+!*       0.1   ARGUMENTS
+!              ---------
+
+INTEGER(KIND=JPIM),INTENT(IN)  :: KLON 
+INTEGER(KIND=JPIM),INTENT(IN)  :: KIDIA 
+INTEGER(KIND=JPIM),INTENT(IN)  :: KFDIA
+INTEGER(KIND=JPIM),INTENT(IN)  :: KTDIA 
+INTEGER(KIND=JPIM),INTENT(IN)  :: KLEV
+INTEGER(KIND=JPIM),INTENT(IN)  :: KACTAERO
+INTEGER(KIND=JPIM),INTENT(IN)  :: KSTART, KSTEP
+INTEGER(KIND=JPIM),INTENT(IN)  :: KNWAVL, KTWAVL(17)
+
+REAL(KIND=JPRB)   ,INTENT(IN)  :: PAP(KLON,KLEV), PAPH(KLON,0:KLEV)
+REAL(KIND=JPRB)   ,INTENT(IN)  :: PQ(KLON,KLEV) , PT(KLON,KLEV)
+REAL(KIND=JPRB)   ,INTENT(IN)  :: PAERO(KLON,KLEV,KACTAERO)
+
+REAL(KIND=JPRB)   ,INTENT(OUT) :: PTAUAER(KLON,6,KLEV), POMGAER(KLON,6,KLEV), PASYAER(KLON,6,KLEV)
+
+
+!*       0.5   LOCAL VARIABLES
+!              ---------------
+
+INTEGER(KIND=JPIM) :: IAER, IBIN, ICAER, IFLAG, ITAER, ITYP, IWAVL, IAE6
+INTEGER(KIND=JPIM) :: JAER, JK, JL, JTAB, JWAVL, JAE6
+INTEGER(KIND=JPIM) :: INAER(15), IRH(KLON,KLEV)
+LOGICAL :: LLPRINT
+
+REAL(KIND=JPRB) :: ZALF(KACTAERO), &
+  & ZASY(KACTAERO), ZOMG(KACTAERO), ZQSAT(KLON,KLEV), ZRHCL(KLON,KLEV)
+REAL(KIND=JPRB) :: ZAERMSS(KLON,KLEV,KACTAERO), ZAERTAU(KLON,KLEV,KACTAERO), &
+  & ZAEROMG(KLON,KLEV,KACTAERO), ZAERASY(KLON,KLEV,KACTAERO)
+REAL(KIND=JPRB) :: ZEPSTAU
+
+!-----------------------------------------------------------------------
+
+
+!-----------------------------------------------------------------------
+
+ZEPSTAU=1.E-20_JPRB
+LLPRINT=.FALSE.
+DO JL=1,NSTPDBG
+  IF (KSTEP == KSTPDBG(JL)) THEN
+    LLPRINT=.TRUE.
+  ENDIF
+ENDDO
+
+!-- units:
+!   ------
+! ZALF is the extinction coefficient           m2 g-1
+! PAERO is the aerosol mass mixing ratio      kg kg-1 
+
+ICAER=0
+DO JAER=1,NMAXTAER
+  IF (NTYPAER(JAER) /= 0) THEN
+    ITAER=NTYPAER(JAER)
+    DO IAER=1,ITAER
+      ICAER=ICAER+1
+      INAER(ICAER)=JAER*10+IAER
+    ENDDO
+  ENDIF
+ENDDO
+
+IRH(KIDIA:KFDIA,1:KLEV)=1
+PTAUAER(KIDIA:KFDIA,:,1:KLEV)=0._JPRB
+POMGAER(KIDIA:KFDIA,:,1:KLEV)=0._JPRB
+PASYAER(KIDIA:KFDIA,:,1:KLEV)=0._JPRB
+
+IFLAG=2
+CALL SATUR (KIDIA, KFDIA, KLON  , KTDIA , KLEV,&
+  & PAP  , PT    , ZQSAT, IFLAG)  
+
+!-- define RH index from "clear-sky" (not yet!) relative humidity
+DO JK=1,KLEV
+  DO JL=KIDIA,KFDIA
+!!!!    ZETA(JL,JK) = (PAPH(JL,JK-1)+PAPH(JL,JK))/(2._JPRB*PAPH(JL,KLEV))
+    ZRHCL(JL,JK)= PQ(JL,JK) / ZQSAT(JL,JK)
+    DO JTAB=1,12
+      IF (ZRHCL(JL,JK)*100._JPRB > RRHTAB(JTAB)) THEN
+        IRH(JL,JK)=JTAB
+      ENDIF
+    ENDDO
+  ENDDO
+ENDDO
+
+!-- mass of aerosols in each layer
+
+DO JAER=1,KACTAERO
+  DO JK=1,KLEV
+    DO JL=KIDIA,KFDIA
+      ZAERMSS(JL,JK,JAER) = MAX(ZEPSTAU, PAERO(JL,JK,JAER))*(PAPH(JL,JK)-PAPH(JL,JK-1))/RG 
+    ENDDO
+  ENDDO
+ENDDO
+      
+DO JWAVL=1,KNWAVL
+  IWAVL=KTWAVL(JWAVL)
+
+  DO JAER=1,KACTAERO
+    ITYP=INAER(JAER)/10
+    IBIN=INAER(JAER)-ITYP*10
+
+!-- ITYP is the aerosol type 1:SS,   2:DD,   3:OM    4:BC,   5:SU,   6:FA,   7:BS,   8=VS,
+!   IBIN is the bin index: 1-3:SS, 1-3:DD,   2:OM,   2:BC,   2:SU,   1:FA,   1:SB    1=VS,
+!   N.B.: extinction coefficients are in m2 g-1
+
+    IF (ITYP <= 5) THEN
+      IAE6 = ITYP
+    ELSEIF (ITYP == 6) THEN
+      IAE6 = 4
+    ELSEIF (ITYP >= 7) THEN
+      IAE6 = 5
+!!!!!!-- for future
+!!!!!!    ELSEIF (ITYP >= 7) THEN
+!!!!!!      IAE6 = 6
+    ENDIF
+
+    DO JK=1,KLEV
+      DO JL=KIDIA,KFDIA
+        IF (ITYP == 1) THEN
+          ZALF(JAER)=ALF_SS(IRH(JL,JK),IWAVL,IBIN)
+          ZOMG(JAER)=OMG_SS(IRH(JL,JK),IWAVL,IBIN)
+          ZASY(JAER)=ASY_SS(IRH(JL,JK),IWAVL,IBIN)
+        ELSEIF (ITYP == 2) THEN
+          ZALF(JAER)=ALF_DD(IBIN,IWAVL)
+          ZOMG(JAER)=OMG_DD(IBIN,IWAVL)
+          ZASY(JAER)=ASY_DD(IBIN,IWAVL)
+        ELSEIF (ITYP == 3) THEN
+          ZALF(JAER)=ALF_OM(IRH(JL,JK),IWAVL)
+          ZOMG(JAER)=OMG_OM(IRH(JL,JK),IWAVL)
+          ZASY(JAER)=ASY_OM(IRH(JL,JK),IWAVL)
+        ELSEIF (ITYP == 4 .OR. ITYP == 6) THEN
+          ZALF(JAER)=ALF_BC(IWAVL)
+          ZOMG(JAER)=OMG_BC(IWAVL)
+          ZASY(JAER)=ASY_BC(IWAVL)
+        ELSEIF (ITYP == 5 .OR. ITYP == 7 .OR. ITYP == 8) THEN
+          IF (ITYP == 5 .AND. IBIN ==2) THEN
+            ZALF(JAER)=0._JPRB
+            ZOMG(JAER)=0._JPRB
+            ZASY(JAER)=0._JPRB
+          ELSE
+            ZALF(JAER)=ALF_SU(IRH(JL,JK),IWAVL)
+            ZOMG(JAER)=OMG_SU(IRH(JL,JK),IWAVL)
+            ZASY(JAER)=ASY_SU(IRH(JL,JK),IWAVL)
+          ENDIF
+        ENDIF
+
+!- ZAERTAU (ND = g m-2 * m2 g-1)
+        ZAERTAU(JL,JK,JAER) = ZAERMSS(JL,JK,JAER) * 1.E+03_JPRB * ZALF(JAER)
+        ZAEROMG(JL,JK,JAER) = ZAERTAU(JL,JK,JAER)*ZOMG(JAER)
+        ZAERASY(JL,JK,JAER) = ZAEROMG(JL,JK,JAER)*ZASY(JAER)
+      ENDDO
+      
+      IF (LLPRINT .OR. (KSTEP == KSTART+6)) THEN
+        WRITE(UNIT=NULOUT,FMT='(1x,''AER_RAD'',6I3,5E12.5)') KSTEP,KIDIA,JK,&
+         & JAER,ITYP,IAE6,PAERO(KIDIA,JK,JAER),ZAERMSS(KIDIA,JK,JAER),ZAERTAU(KIDIA,JK,JAER),&
+         & ZAEROMG(KIDIA,JK,JAER),ZAERASY(KIDIA,JK,JAER)
+      ENDIF
+    ENDDO
+
+!-- total optical thickness per aerosol type: as sum over all individual components
+    DO JK=1,KLEV
+      DO JL=KIDIA,KFDIA
+        PTAUAER(JL,IAE6,JK)=PTAUAER(JL,IAE6,JK)+ZAERTAU(JL,JK,JAER)
+        POMGAER(JL,IAE6,JK)=POMGAER(JL,IAE6,JK)+ZAEROMG(JL,JK,JAER)
+        PASYAER(JL,IAE6,JK)=PASYAER(JL,IAE6,JK)+ZAERASY(JL,JK,JAER)
+      ENDDO
+    ENDDO
+
+  ENDDO
+
+ENDDO
+
+DO JAE6=1,6
+  DO JK=1,KLEV
+    DO JL=KIDIA,KFDIA
+      IF( PTAUAER(JL,JAE6,JK) > 0._JPRB .AND. POMGAER(JL,JAE6,JK) > 0._JPRB) THEN
+        PASYAER(JL,JAE6,JK)=PASYAER(JL,JAE6,JK)/POMGAER(JL,JAE6,JK)
+        POMGAER(JL,JAE6,JK)=POMGAER(JL,JAE6,JK)/PTAUAER(JL,JAE6,JK)
+      ELSE
+        PASYAER(JL,JAE6,JK)=0._JPRB
+        POMGAER(JL,JAE6,JK)=0._JPRB
+        PTAUAER(JL,JAE6,JK)=0._JPRB
+      ENDIF
+    ENDDO
+  ENDDO
+ENDDO
+
+IF (LLPRINT .OR. (KSTEP == KSTART+6)) THEN
+  JL=KIDIA
+  DO JK=1,KLEV
+    WRITE(UNIT=NULOUT,FMT='(1x,''AER_RAD2'',3I3,6(E10.3,2F7.4)') KSTEP,KIDIA,JK,&
+     & (PTAUAER(JL,JAE6,JK),PASYAER(JL,JAE6,JK),POMGAER(JL,JAE6,JK),JAE6=1,6)
+  ENDDO
+ENDIF
+!-----------------------------------------------------------------------
+END SUBROUTINE AER_RAD

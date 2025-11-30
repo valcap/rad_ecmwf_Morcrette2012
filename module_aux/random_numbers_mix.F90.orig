@@ -1,0 +1,427 @@
+#ifdef RS6K
+@PROCESS HOT NOSTRICT
+#endif
+MODULE random_numbers_mix
+
+!**** *RANDOM_NUMBERS_MIX*  - Portable Random Number Generator
+
+!     Purpose.
+!     --------
+!           Generate machine-independent pseudo-random numbers
+
+!**   Interface.
+!     ----------
+!        CALL initialize_random_numbers (kseed, yd_stream)
+!        CALL uniform_distribution      (px   , yd_stream)
+!        CALL gaussian_distribution     (px   , yd_stream)
+!        CALL random_number_restartfile (fname, action)
+!        CALL wr_rangen_state           (nunit)
+
+!        Explicit arguments :
+!        --------------------
+!        kseed  (input)    : integer seed in the range [0,HUGE(kseed)]
+!        yd_stream (optional) : the state of the random number generator
+!        px     (output)   : array to receive random numbers in the range
+
+!        In the case of uniform_distribution, px has values in the range [0.0,1.0)
+
+!        Implicit arguments :
+!        --------------------
+!        None
+
+!     Method.
+!     -------
+!        Based loosly on ZUFALL (Petersen, 1994).
+
+!        The main difference between this generator and ZUFALL is that integer arithmetic
+!        is used. This ensures portability to vector machines that implement different
+!        real arithmetic. In particular, vector machines often implement non-IEEE
+!        arithmetic for their vector pipes. This routine will give identical results for
+!        any integer type with at least 32 bits.
+
+!        The generator is a lagged-Fibonacci generator: x(i) = x(i-p) + x(i-q) mod 2**m.
+!        Lagged-Fibonacci generators have very long repeat periods: (2**q -1) * 2**(m-1)
+!        (i.e about 2.85E191 for q=607, m=30). They pass most tests for randomness.
+
+!        p and q must be chosen carefully. Values from the following table are OK.
+!        Larger values give better random numbers, but smaller values are more
+!        cache-friendly.
+
+!          q         p
+!        9689      4187
+!        4423      2098
+!        2281      1029
+!        1279       418
+!         607       273
+!         521       168
+!         250       103
+!         127        63
+!          97        33
+!          55        24
+!          43        22
+!          31        13
+!          24        10
+
+!        The initial q values of x are set using the binary shirt register method of
+!        Burns and Pryor 1999.
+
+!        Mascagni et al (1995) show how to choose different sets of initial values that
+!        are guaranteed to be drawn from different maximal-length cycles. This requires
+!        the initial values of x(1)...x(q) to be in "canonical form". Specifically,
+!        x(1) must be zero and all but a particular one or two values of x must be
+!        even. For q=607 and p=273, only one element (jpq-jps) must be odd.
+
+!     Externals.
+!     ----------
+!        None
+
+!     Reference.
+!     ----------
+!        Burns P.J. and Pryor D.V. 1999,
+!                             Surface Radiative Transport at Large Scale via Monte Carlo.
+!                             Annual Review of Heat Transfer, Vol 9.
+!
+!        Petersen W.P., 1994, Lagged Fibonacci Series Random Number Generator
+!                             for the NEC SX-3. International Journal of High Speed Computing
+!                             Vol. 6, No. 3, pp387-398.
+!
+!        Mascagni M., Cuccaro S.A., Pryor D.V., Robinson M.L., 1995,
+!                             A Fast, High Quality and Reproducible Parallel Lagged-Fibonacci
+!                             Pseudorandom Number Generator. Journal of Computational Physics
+!                             Vol 119. pp211-219.
+
+!     Author.
+!     -------
+!        Mike Fisher *ECMWF*
+
+!     Modifications.
+!     --------------
+!        Original : 2002-09-25
+!        Made parallel friendly: 2003-08-11 Robert Pincus
+!        M Leutbecher: 2004-05-10 restart capability
+!        M Fisher:     2005-03-30 replaced LCG initialization with shift register
+!     ------------------------------------------------------------------
+
+USE PARKIND1  ,ONLY : JPIM     ,JPRB
+
+IMPLICIT NONE
+
+SAVE
+
+PRIVATE
+PUBLIC randomNumberStream, &
+     & initialize_random_numbers, uniform_distribution, gaussian_distribution ,&
+     & random_number_restartfile, wr_rangen_state
+
+INTEGER(KIND=JPIM), PARAMETER      :: jpp=273, jpq=607, jps=105
+INTEGER(KIND=JPIM), PARAMETER      :: jpmm=30
+INTEGER(KIND=JPIM), PARAMETER      :: jpm=2**jpmm
+INTEGER(KIND=JPIM), PARAMETER      :: jpnumsplit=(jpq-2)/(jpp-1)
+INTEGER(KIND=JPIM), PARAMETER      :: jplensplit=(jpq-jpp+jpnumsplit-1)/jpnumsplit
+INTEGER(KIND=JPIM), PARAMETER      :: initValue = 12345678
+
+type randomNumberStream
+  private
+  INTEGER(KIND=JPIM)                 :: iused
+  INTEGER(KIND=JPIM)                 :: initTest ! Should initialize to zero, but can't in F90
+  INTEGER(KIND=JPIM), dimension(jpq) :: ix 
+  REAL(KIND=JPRB)                    :: zrm
+end type randomNumberStream
+
+CONTAINS
+!-------------------------------------------------------------------------------
+subroutine initialize_random_numbers (kseed, yd_stream) 
+  !-------------------------------------------------------------------------------
+  ! Initialize fibgen
+  !-------------------------------------------------------------------------------
+  INTEGER(KIND=JPIM),                INTENT(in   ) :: kseed
+  type(randomNumberStream), intent(inout) :: yd_stream
+  
+  INTEGER, PARAMETER :: jpmask=123459876
+  INTEGER(KIND=JPIM), PARAMETER     :: jpwarmup_shft=64, jpwarmup_lfg=999
+  INTEGER(KIND=JPIM)                :: idum,jk,jj,jbit
+  REAL(KIND=JPRB), DIMENSION(jpwarmup_lfg)   :: zwarmup
+
+  !-------------------------------------------------------------------------------
+  ! Initialize the buffer using a binary shift register (Burns and Pryor, 1999).
+  ! The Galois representation is used for the shift register as it is more
+  ! efficient than the Fibonacci representation. The magic numbers 31 and 87
+  ! define the shift register primitive polynomial=(32,7,5,3,2,1,0).
+  !
+  ! To ensure that different seeds produce distinct initial buffer states in
+  ! canonical form, bits 0...jpmm-2 of the initial seed (after XORing with jpmask
+  ! and spinning up using the linear congruential generator) are used to construct
+  ! x(2), and the remaining bits are used to construct x(jpq).
+  !-------------------------------------------------------------------------------
+  
+  idum = ABS(IEOR(kseed,jpmask))
+  if (idum==0) idum=jpmask
+
+  do jj=1,jpwarmup_shft
+    if (btest(idum,31)) then
+      idum=ibset(ishft(ieor(idum,87),1),0)
+    else
+      idum=ibclr(ishft(idum,1),0)
+    endif
+  enddo
+
+  yd_stream%ix(1:jpq-1)= 0
+  yd_stream%ix(2)      = ISHFT(IBITS(idum,0,jpmm-1),1)
+  yd_stream%ix(jpq)    = IBITS(idum,jpmm-1,BIT_SIZE(idum)+1-jpmm)
+
+  do jbit=1,jpmm-1
+    do jj=3,jpq-1
+      if (btest(idum,31)) then
+        idum=ibset(ishft(ieor(idum,87),1),0)
+        yd_stream%ix(jj)=ibset(yd_stream%ix(jj),jbit)
+      else
+        idum=ibclr(ishft(idum,1),0)
+      endif
+    enddo
+  enddo
+
+  yd_stream%ix(jpq-jps) = IBSET(yd_stream%ix(jpq-jps),0)
+  
+  !-------------------------------------------------------------------------------
+  ! Initialize some constants
+  !-------------------------------------------------------------------------------
+  
+  yd_stream%iused=jpq
+  yd_stream%zrm=1.0_JPRB/REAL(jpm,JPRB)
+  
+  !-------------------------------------------------------------------------------
+  ! Check the calculation of jpnumsplit and jplensplit.
+  !-------------------------------------------------------------------------------
+  
+  IF (jpp+jpnumsplit*jplensplit < jpq) THEN
+!    CALL abor1 ('initialize_random_numbers: upper limit of last loop < jpq')
+    STOP 'initialize_random_numbers: upper limit of last loop < jpq'
+  ENDIF
+  
+  IF (jplensplit >=jpp) THEN
+!    CALL abor1 ('initialize_random_numbers: loop length > jpp')
+    STOP 'initialize_random_numbers: loop length > jpp'
+  ENDIF
+  
+  IF (jpnumsplit>1) THEN
+    IF ((jpq-jpp+jpnumsplit-2)/(jpnumsplit-1) < jpp) THEN
+!      CALL abor1 ('initialize_random_numbers: jpnumsplit is bigger than necessary')
+      STOP 'initialize_random_numbers: jpnumsplit is bigger than necessary'
+    ENDIF
+  ENDIF
+
+  !-------------------------------------------------------------------------------
+  ! Set initTest to show that the stream is initialized.
+  !-------------------------------------------------------------------------------
+
+  yd_stream%initTest = initValue
+  
+  !-------------------------------------------------------------------------------
+  ! Warm up the generator.
+  !-------------------------------------------------------------------------------
+
+  CALL uniform_distribution (zwarmup, yd_stream)
+
+END subroutine initialize_random_numbers
+
+!@PROCESS HOT NOSTRICT
+SUBROUTINE uniform_distribution (px,yd_stream)
+  !--------------------------------------------------------------------------------
+  ! Generate uniformly distributed random numbers in the range 0.0<= px < 1.0
+  !--------------------------------------------------------------------------------
+  INTEGER(KIND=JPIM), PARAMETER :: ivar=Z"3FFFFFFF"
+  type(randomNumberStream), intent(inout) :: yd_stream
+  REAL(KIND=JPRB), DIMENSION(:),     INTENT(  OUT) :: px
+
+  INTEGER(KIND=JPIM)                :: jj, jk, in, ifilled
+  
+  ! This test is a little dirty but Fortran 90 doesn't allow for the initialization
+  !   of components of derived types. 
+  if(yd_stream%initTest /= initValue) &
+    & STOP 'uniform_distribution called before initialize_random_numbers'
+!    & CALL abor1 ('uniform_distribution called before initialize_random_numbers')
+  
+  !--------------------------------------------------------------------------------
+  ! Copy numbers that were generated during the last call, but not used.
+  !--------------------------------------------------------------------------------
+  
+  in=SIZE(px)
+  ifilled=0
+  
+  DO jj=yd_stream%iused+1,MIN(jpq,in+yd_stream%iused)
+    px(jj-yd_stream%iused) = yd_stream%ix(jj)*yd_stream%zrm
+    ifilled=ifilled+1
+  ENDDO
+  
+  yd_stream%iused=yd_stream%iused+ifilled
+  
+  IF (ifilled==in) RETURN
+  
+  !--------------------------------------------------------------------------------
+  ! Generate batches of jpq numbers until px has been filled
+  !--------------------------------------------------------------------------------
+  
+  DO WHILE (ifilled<in)
+  
+  !--------------------------------------------------------------------------------
+  ! Generate jpq numbers in vectorizable loops. The first loop is length jpp. The
+  ! remaining jpq-jpp elements are calculated in loops of length shorter than jpp.
+  !--------------------------------------------------------------------------------
+  
+  !OCL NOVREC
+    DO jj=1,jpp
+!     yd_stream%ix(jj) = yd_stream%ix(jj) + yd_stream%ix(jj-jpp+jpq)
+!     if (yd_stream%ix(jj)>=jpm) yd_stream%ix(jj) = yd_stream%ix(jj)-jpm
+      yd_stream%ix(jj) = iand(ivar,yd_stream%ix(jj) + yd_stream%ix(jj-jpp+jpq))
+    ENDDO
+  
+    DO jk=1,jpnumsplit
+  !OCL NOVREC
+      DO jj=1+jpp+(jk-1)*jplensplit,MIN(jpq,jpp+jk*jplensplit)
+!       yd_stream%ix(jj) = yd_stream%ix(jj) + yd_stream%ix(jj-jpp)
+!       if (yd_stream%ix(jj)>=jpm) yd_stream%ix(jj) = yd_stream%ix(jj)-jpm
+        yd_stream%ix(jj) = iand(ivar,yd_stream%ix(jj) + yd_stream%ix(jj-jpp))
+      ENDDO
+    ENDDO
+  
+    yd_stream%iused = MIN(jpq,in-ifilled)
+    px(ifilled+1:ifilled+yd_stream%iused) = yd_stream%ix(1:yd_stream%iused)*yd_stream%zrm
+    ifilled = ifilled+yd_stream%iused
+  ENDDO
+  
+END SUBROUTINE uniform_distribution
+!-------------------------------------------------------------------------------
+SUBROUTINE gaussian_distribution (px, yd_stream)
+  type(randomNumberStream), intent(inout) :: yd_stream
+  REAL(KIND=JPRB),                   INTENT(  OUT) :: px(:)
+  !--------------------------------------------------------------------------------
+  ! Generate normally-distributed random numbers using the Box-Muller method.
+  !
+  ! NB: this routine does not use buffering. This means that the following calls:
+  !     call gaussian_distribution (zx(1:k))
+  !     call gaussian_distribution (zx(k+1:n))
+  ! will produce different numbers for elements k+1 onwards than the single call:
+  !     call gaussian_distribution (zx(1:n))
+  !--------------------------------------------------------------------------------
+  
+  INTEGER(KIND=JPIM) :: ilen, j
+  REAL(KIND=JPRB) :: zfac, ztwopi
+  REAL(KIND=JPRB) :: zx(SIZE(px)+1)
+  
+  !--------------------------------------------------------------------------------
+  ! Generate uniform random points in the range [0,1)
+  !--------------------------------------------------------------------------------
+
+    CALL uniform_distribution (zx, yd_stream)
+
+  !--------------------------------------------------------------------------------
+  ! Generate gaussian deviates using Box-Muller method
+  !--------------------------------------------------------------------------------
+  
+  ztwopi = 8.0_JPRB*ATAN(1.0_JPRB)
+  ilen=SIZE(px)
+  
+  DO j=1,ilen-1,2
+    zfac = SQRT(-2.0_JPRB*LOG(1.0_JPRB-zx(j)))
+    px(j  ) = zfac*COS(ztwopi*zx(j+1))
+    px(j+1) = zfac*SIN(ztwopi*zx(j+1))
+  ENDDO
+  
+  !--------------------------------------------------------------------------------
+  ! Generate the last point if ilen is odd
+  !--------------------------------------------------------------------------------
+  
+  IF (MOD(ilen,2) /= 0) THEN
+    zfac = SQRT(-2.0_JPRB*LOG(1.0_JPRB-zx(ilen)))
+    px(ilen) = zfac*COS(ztwopi*zx(ilen+1))
+  ENDIF
+  
+END SUBROUTINE gaussian_distribution
+!-------------------------------------------------------------------------------
+SUBROUTINE random_number_restartfile( cdfname, cdaction,yd_stream )
+!--------------------------------------------------------------------------------
+!
+! read (cdaction='r') or write (cdaction='w') restart file
+! for random number generator
+
+!####### N.B. ###################################################################
+! THIS ROUTINE IS ASSUMED NOT TO BE USED IN THE 1D STAND-ALONE RADIATION MODEL	#
+! BECAUSE OF ITS REFERENCES TO MARS FUNCTIONS PB.... 
+!################################################################################
+!
+!--------------------------------------------------------------------------------
+CHARACTER (LEN=*),   INTENT(IN) :: cdfname
+CHARACTER (LEN=1  ), INTENT(IN) :: cdaction
+type(randomNumberStream), intent(inout) :: yd_stream
+  
+INTEGER(KIND=JPIM) :: iunit, iret, ibytes_in_jpim
+
+ibytes_in_jpim= ceiling(real(bit_size(yd_stream%iused))/8.0_JPRB - tiny(1.0_JPRB))
+
+IF (IBYTES_IN_JPIM /= 4) THEN
+!  CALL ABOR1('random_number_restartfile: number of bytes for JPIM is not 4 ')        
+  STOP 'random_number_restartfile: number of bytes for JPIM is not 4 '
+ENDIF
+
+!CALL PBOPEN(IUNIT, CDFNAME, cdaction, IRET)
+IF (IRET /= 0) THEN
+!  CALL ABOR1('random_number_restartfile: PBOPEN FAILED opening '//CDFNAME)    
+  STOP 'random_number_restartfile: PBOPEN FAILED opening '//CDFNAME  
+ENDIF
+
+
+IF (cdaction=='r' .OR. cdaction=='R') THEN
+!  CALL PBREAD(IUNIT, yd_stream%IX,    IBYTES_IN_JPIM*JPQ, IRET)
+  IF (IRET < 0) THEN
+!    CALL ABOR1('random_number_restartfile: PBREAD could not read ix from '//CDFNAME)    
+    STOP 'random_number_restartfile: PBREAD could not read ix from '//CDFNAME
+  ENDIF
+!  CALL PBREAD(IUNIT, yd_stream%IUSED, IBYTES_IN_JPIM    , IRET)
+  IF (IRET < 0) THEN
+!    CALL ABOR1('random_number_restartfile: PBREAD could not read iused from '//CDFNAME)    
+    STOP 'random_number_restartfile: PBREAD could not read iused from '//CDFNAME 
+  ENDIF
+
+!  l_initialized = .TRUE.
+  yd_stream%initTest = initValue
+  yd_stream%zrm=1.0_JPRB/REAL(jpm,JPRB)
+ELSEIF(cdaction=='w' .OR. cdaction=='W') THEN
+!  CALL PBWRITE(IUNIT, yd_stream%IX, ibytes_in_jpim*JPQ, IRET)
+  IF (IRET < 0) THEN
+!    CALL ABOR1('random_number_restartfile: PBWRITE could not write ix on '//CDFNAME)    
+    STOP 'random_number_restartfile: PBWRITE could not write ix on '//CDFNAME  
+  ENDIF
+!  CALL PBWRITE(IUNIT, yd_stream%IUSED, ibytes_in_jpim , IRET)
+  IF (IRET < 0) THEN
+!    CALL ABOR1('random_number_restartfile: PBWRITE could not write iused on '//CDFNAME)    
+    STOP 'random_number_restartfile: PBWRITE could not write iused on '//CDFNAME  
+  ENDIF
+
+ELSE
+!  CALL abor1 ('random_number_restartfile: cdaction = '//cdaction//' is undefined.')
+  STOP 'random_number_restartfile: cdaction = '//cdaction//' is undefined.'
+ENDIF
+
+!CALL PBCLOSE(IUNIT, IRET)
+IF (IRET /= 0) THEN
+!  CALL ABOR1('random_number_restartfile: PBCLOSE FAILED closing '//CDFNAME)    
+  STOP 'random_number_restartfile: PBCLOSE FAILED closing '//CDFNAME
+ENDIF
+
+END SUBROUTINE random_number_restartfile
+
+
+SUBROUTINE wr_rangen_state( kunit, yd_stream )
+!--------------------------------------------------------------------------------
+! write state of random number generator to unit kunit
+!--------------------------------------------------------------------------------
+INTEGER(KIND=JPIM), INTENT(IN) :: kunit
+type(randomNumberStream), intent(in) :: yd_stream
+
+WRITE( kunit, * ) 'module random_numbers_mix, generator state is'
+WRITE( kunit, '(8I10)') yd_stream%ix
+WRITE( kunit, '(I10)')  yd_stream%iused
+
+END SUBROUTINE wr_rangen_state
+
+END MODULE random_numbers_mix

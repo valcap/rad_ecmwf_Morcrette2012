@@ -1,0 +1,350 @@
+SUBROUTINE RADINA &
+ & ( KIDIA , KFDIA , KLON   , KTDIA  , KLEV   , KMODE,&
+ & LDLAND,&
+ & PALBD , PALBP , PAPRS  , PAPRSF,&
+ & PCCNL , PCCNO , PCCO2  , PCLFR,&
+ & PGELAM, PCLON,  PSLON,&
+ & PDP ,   PEMIR , PEMIW,&
+ & PGEMU,  PMU0 ,  PQ     , PQS    , PQRAIN , PRAINT,&
+ & PQIWP , PQLWP,&
+ & PSLM  , PT    , PTS,&
+ & PEMTD , PTRSO,&
+ & PEMIT , PTH   , PCTRSO , PCEMTR , PTRSOD,&
+ & PSUDU , PSDUR , PDSRP &
+ & )  
+
+!**** *RADINA* - RADIATION INTERFACE TO RADIATION SCHEME USED
+!                DURING ASSIMILATION
+
+!     PURPOSE.
+!     --------
+
+!**   INTERFACE.
+!     ----------
+
+!        EXPLICIT ARGUMENTS :
+!        --------------------
+!     ==== INPUTS ===
+! KTDIA  : INDEX OF TOP LEVEL FROM WHICH COMPUTATIONS ARE ACTIVE
+! KLEV   : NUMBER OF LEVELS
+
+! LDLAND : (KLON)               ; .T. OVER LAND
+
+! PAER   : (KLON,6,KLEV)        ; OPTICAL THICKNESS OF THE AEROSOLS
+! PALBD  : (KLON,NSW)           ; DIFFUSE ALBEDO IN THE NSW SW INTERVALS
+! PALBP  : (KLON,NSW)           ; PARALLEL ALBEDO IN THE NSW SW INTERVALS
+! PAPRS  : (KLON,KLEV+1)        ; HALF LEVEL PRESSURE
+! PAPRSF : (KLON,KLEV )         ; FULL LEVEL PRESSURE
+! PCCNL  : (KLON)               ; CCN CONCENTRATION OVER LAND
+! PCCNO  : (KLON)               ; CCN CONCENTRATION OVER OCEAN
+! PCCO2  :                      ; CONCENTRATION IN CO2 (PA/PA)
+! PCLFR  : (KLON,KLEV )         ; CLOUD FRACTIONAL COVER
+! PGELAM : (KLON)               ; LONGITUDE
+! PQO3   : (KLON,KLEV )         ; OZONE MIXING RATIO (MASS)
+! PDP    : (KLON,KLEV)          ; LAYER PRESSURE THICKNESS
+! PEMIR  : (KLON)               ; SURFACE EMISSIVITY OUTSIDE LW WINDOW
+! PEMIW  : (KLON)               ; SURFACE LW WINDOW EMISSIVITY
+! PGEMU  : (KLON)               ; SINE OF LATITUDE ON THE REAL EARTH
+! PMU0   : (KLON)               ; SOLAR ANGLE
+! PQ     : (KLON,KLEV )         ; SPECIFIC HUMIDITY PA/PA
+! PQS    : (KLON,KLEV )         ; SATURATION SPECIFIC HUMIDITY PA/PA
+! PQRAIN : (KLON,KLEV)          ; RAIN WATER KG/KG
+! PRAINT : (KLON,KLEV)          ; RAIN RATE (m/s)
+! PQIWP  : (KLON,KLEV )         ; ICE    WATER KG/KG
+! PQLWP  : (KLON,KLEV )         ; LIQUID WATER KG/KG
+! PSLM   : (KLON)               ; LAND-SEA MASK
+! PT     : (KLON,KLEV)          ; FULL LEVEL TEMPERATURE
+! PTS    : (KLON)               ; SURFACE TEMPERATURE
+!     ==== OUTPUTS ===
+! PEMTD (KLON,KLEV+1)           ; TOTAL DOWNWARD LONGWAVE EMISSIVITY
+! PTRSO (KLON,KLEV+1)           ; TOTAL SHORTWAVE TRANSMISSIVITY
+! PTH   (KLON,KLEV+1)           ; HALF LEVEL TEMPERATURE
+! PCTRSO(KLON,2)                ; CLEAR-SKY SHORTWAVE TRANSMISSIVITY
+! PCEMTR(KLON,2)                ; CLEAR-SKY NET LONGWAVE EMISSIVITY
+! PTRSOD(KLON)                  ; TOTAL-SKY SURFACE SW TRANSMISSITY
+! PEMIT (KLON)                  ; SURFACE TOTAL LONGWAVE EMISSIVITY
+
+!        IMPLICIT ARGUMENTS :   NONE
+!        --------------------
+
+!     METHOD.
+!     -------
+!        SEE DOCUMENTATION
+
+!     EXTERNALS.
+!     ----------
+
+!     REFERENCE.
+!     ----------
+!        ECMWF RESEARCH DEPARTMENT DOCUMENTATION OF THE IFS
+
+!     MODIFICATIONS.
+!     --------------
+!        Original : 96-10-11 JJ MORCRETTE
+!        JJMorcrette 990128 : sunshine duration
+!        JJMorcrette 990128 : sunshine duration
+!        99-05-25   JJMorcrette  Revised aerosols
+!        01-10-10   JJMorcrette  CCNs
+!        01-11-08   JJMorcrette  Safety checks
+!        M.Hamrud      01-Oct-2003 CY28 Cleaning
+!-----------------------------------------------------------------------
+
+USE PARKIND1  ,ONLY : JPIM     ,JPRB
+
+USE YOMPHY3  , ONLY : RII0
+USE YOERAD   , ONLY : NAER     ,NOZOCL   ,LEPO3RA  ,NSW
+USE YOEAERD  , ONLY : RCAEROS
+USE YOERDU   , ONLY : NIMP     ,NOUT
+USE YOERDI   , ONLY : RRAE     ,REPH2O , RSUNDUR
+USE YOMPHY   , ONLY : LRAYFM
+USE YOEPHLI  , ONLY : LPHYLIN
+
+IMPLICIT NONE
+
+INTEGER(KIND=JPIM),INTENT(IN)    :: KLON 
+INTEGER(KIND=JPIM),INTENT(IN)    :: KLEV 
+INTEGER(KIND=JPIM),INTENT(IN)    :: KIDIA 
+INTEGER(KIND=JPIM),INTENT(IN)    :: KFDIA 
+INTEGER(KIND=JPIM)               :: KTDIA ! Argument NOT used
+INTEGER(KIND=JPIM),INTENT(IN)    :: KMODE 
+LOGICAL                          :: LDLAND(KLON) ! Argument NOT used
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PALBD(KLON,NSW) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PALBP(KLON,NSW) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PAPRS(KLON,KLEV+1) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PAPRSF(KLON,KLEV) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PCCNL(KLON) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PCCNO(KLON) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PCCO2 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PCLFR(KLON,KLEV) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PGELAM(KLON), PCLON(KLON), PSLON(KLON) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PDP(KLON,KLEV) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PEMIR(KLON) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PEMIW(KLON) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PGEMU(KLON) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PMU0(KLON) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PQ(KLON,KLEV) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PQS(KLON,KLEV) 
+REAL(KIND=JPRB)                  :: PQRAIN(KLON,KLEV) ! Argument NOT used
+REAL(KIND=JPRB)                  :: PRAINT(KLON,KLEV) ! Argument NOT used
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PQIWP(KLON,KLEV) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PQLWP(KLON,KLEV) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PSLM(KLON) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PT(KLON,KLEV) 
+REAL(KIND=JPRB)   ,INTENT(IN)    :: PTS(KLON) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PEMTD(KLON,KLEV+1) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PTRSO(KLON,KLEV+1) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PEMIT(KLON) 
+REAL(KIND=JPRB)   ,INTENT(INOUT) :: PTH(KLON,KLEV+1) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PCTRSO(KLON,2) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PCEMTR(KLON,2) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PTRSOD(KLON) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PSUDU(KLON) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PSDUR(KLON) 
+REAL(KIND=JPRB)   ,INTENT(OUT)   :: PDSRP(KLON) 
+!-----------------------------------------------------------------------
+
+!*       0.1   ARGUMENTS.
+!              ----------
+
+!     ==== COMPUTED IN RADLSW ===
+
+!     ------------------------------------------------------------------
+
+!*       0.2   LOCAL ARRAYS.
+!              -------------
+
+REAL(KIND=JPRB) :: ZQAER(KLON,6,KLEV) , ZQOZ(KLON,KLEV)
+
+REAL(KIND=JPRB) :: ZFRTHC(KLON,KLEV+1), ZFRSOC(KLON,KLEV+1), ZFRSOD(KLON)
+REAL(KIND=JPRB) :: ZFRTH (KLON,KLEV+1), ZFRSO (KLON,KLEV+1)
+REAL(KIND=JPRB) ::  ZSUDU (KLON)
+REAL(KIND=JPRB) :: ZNBAS(KLON)        , ZNTOP(KLON)
+
+REAL(KIND=JPRB) :: ZAMU0(KLON)
+
+REAL(KIND=JPRB) :: ZCLFR(KLON,KLEV)
+REAL(KIND=JPRB) :: ZQ(KLON,KLEV)    , ZQS(KLON,KLEV)
+REAL(KIND=JPRB) :: ZQIWP(KLON,KLEV) , ZQLWP(KLON,KLEV)
+REAL(KIND=JPRB) :: ZUVDF(KLON) , ZPARF(KLON), ZPARCF(KLON), ZTINCF(KLON)
+REAL(KIND=JPRB) :: ZFSDNN(KLON) , ZFSDNV(KLON)
+REAL(KIND=JPRB) :: ZSFSWDIR(KLON,NSW),ZSFSWDIF(KLON,NSW)
+REAL(KIND=JPRB) :: ZDUMMY(KLON,KLEV,NSW)
+
+INTEGER(KIND=JPIM) :: JAER, JK, JL
+
+REAL(KIND=JPRB) :: Z1S, Z2S, Z3S, ZCRAE, ZRII0
+
+
+!     ------------------------------------------------------------------
+
+!*       1.    PREPARATORY WORK
+!              ----------------
+
+NIMP=0
+NOUT=0
+ZRII0=RII0
+
+!- various constants      
+
+ZCRAE=RRAE*(RRAE+2.0_JPRB)
+
+!     ------------------------------------------------------------------
+
+!*         2.     HALF-LEVEL QUANTITIES
+
+! 200 CONTINUE
+
+DO JK=2,KLEV
+  DO JL=KIDIA,KFDIA
+    Z1S = PAPRSF(JL,JK-1)*(PAPRSF(JL,JK)-PAPRS(JL,JK))
+    Z2S = PAPRSF(JL,JK)*(PAPRS(JL,JK)-PAPRSF(JL,JK-1))
+    Z3S = PAPRS(JL,JK)*(PAPRSF(JL,JK)-PAPRSF(JL,JK-1))
+    PTH(JL,JK)=(PT(JL,JK-1)*Z1S+PT(JL,JK)*Z2S)/Z3S
+  ENDDO
+ENDDO
+
+DO JL=KIDIA,KFDIA
+  PTH(JL,1) =&
+   & PT(JL,1)-PAPRSF(JL,1)&
+   & *(PT(JL,1)-PTH(JL,2))         &
+   & /(PAPRSF(JL,1)-PAPRS(JL,2))    
+
+  PTH(JL,KLEV+1)= PTS(JL)
+  ZNBAS(JL) = 1.0_JPRB
+  ZNTOP(JL) = 1.0_JPRB
+ENDDO
+
+!     ------------------------------------------------------------------
+
+!*         3.     SOLAR ZENITH ANGLE IS SAMPLED AND EARTH'S CURVATURE
+!                                     CORRECTED
+
+! 300 CONTINUE
+
+DO JL=KIDIA,KFDIA
+  IF (PMU0(JL) > 1.E-10_JPRB) THEN
+    ZAMU0(JL)=RRAE/(SQRT(PMU0(JL)**2+ZCRAE)-PMU0(JL))
+  ELSE
+    ZAMU0(JL)=RRAE/SQRT(ZCRAE)
+  ENDIF  
+ENDDO
+
+!*           3.3     SECURITY COMPUTATIONS FOR CRITICAL VARIABLES.
+
+DO JK=1,KLEV
+  DO JL=KIDIA,KFDIA
+    ZCLFR(JL,JK)=PCLFR(JL,JK)
+    IF (PCLFR(JL,JK) < 0.0_JPRB ) THEN
+      ZCLFR(JL,JK) = 0.0_JPRB
+    ELSEIF (PCLFR(JL,JK) > 1.0_JPRB ) THEN
+      ZCLFR(JL,JK) = 1.0_JPRB
+    ENDIF
+    ZQS(JL,JK)=PQS(JL,JK)
+    IF (PQS(JL,JK) <= 2.0_JPRB*REPH2O) THEN
+      ZQS(JL,JK) = 2.0_JPRB*REPH2O
+    ENDIF
+    ZQ(JL,JK)=PQ(JL,JK)
+    IF (PQ(JL,JK) <= 2.0_JPRB*REPH2O) THEN
+      ZQ(JL,JK) = 2.0_JPRB*REPH2O
+    ELSEIF (PQ(JL,JK) > PQS(JL,JK)*(1.0_JPRB-REPH2O)) THEN
+      ZQ(JL,JK) = PQS(JL,JK)*(1.0_JPRB-REPH2O)
+    ENDIF
+    ZQLWP(JL,JK)=PQLWP(JL,JK)
+    IF (PQLWP(JL,JK) <= REPH2O) THEN
+      ZQLWP(JL,JK) = REPH2O
+    ENDIF
+    ZQIWP(JL,JK)=PQIWP(JL,JK)
+    IF (PQIWP(JL,JK) <= REPH2O) THEN
+      ZQIWP(JL,JK) = REPH2O
+    ENDIF
+  ENDDO
+ENDDO
+
+!     ------------------------------------------------------------------
+
+!*         4.     OZONE AND AEROSOLS
+
+IF(.NOT.LRAYFM) THEN
+  CALL  RADACA ( KIDIA , KFDIA , KLON  , KTDIA , KLEV,&
+   & PAPRS, PGELAM, PGEMU, PCLON, PSLON, PTH,&
+   & ZQAER, ZQOZ )  
+
+  IF (NOZOCL == 1.AND..NOT.LEPO3RA .AND..NOT.LPHYLIN) THEN
+    CALL RADOZC ( KIDIA , KFDIA , KLON, KTDIA, KLEV,&
+     & 1     , KLON , 0,&
+     & PAPRS , PGEMU,&
+     & ZQOZ  )  
+  ENDIF
+
+ENDIF
+
+IF (NAER == 0) THEN
+  DO JAER = 1 , 6
+    DO JK = 1 , KLEV
+      DO JL = KIDIA,KFDIA
+        ZQAER(JL,JAER,JK) = RCAEROS
+      ENDDO
+    ENDDO
+  ENDDO
+ELSE
+  DO JK = 1 , KLEV
+    DO JL = KIDIA,KFDIA
+!            ZQAER(JL,4,JK) = RCAEROS
+      ZQAER(JL,5,JK) = RCAEROS
+    ENDDO
+  ENDDO
+ENDIF
+
+!     ------------------------------------------------------------------
+
+!*         5.      CALL TO ACTUAL RADIATION SCHEME 
+
+CALL RADLSW &
+ & ( KIDIA , KFDIA , KLON  , KLEV  ,  KMODE , NAER,&
+ & ZRII0,&
+ & ZQAER , PALBD , PALBP , PAPRS , PAPRSF,&
+ & PCCNL , PCCNO,&
+ & PCCO2 , ZCLFR , PDP   , PEMIR , PEMIW,&
+ & PSLM  , ZAMU0 , ZQOZ,&
+ & ZQ    , ZQIWP , ZQLWP , ZQS ,   PQRAIN , PRAINT,&
+ & PTH   , PT    , PTS   , ZNBAS , ZNTOP,&
+ & PEMIT , ZFRTHC , ZFRTH , ZFRSOC , ZFRSO , ZFRSOD,&
+ & ZSUDU , ZUVDF  , ZPARF , ZPARCF , ZTINCF, ZSFSWDIR,&
+ & ZSFSWDIF,ZFSDNN,ZFSDNV, &
+ & .FALSE., ZDUMMY, ZDUMMY, ZDUMMY)   
+
+!     ------------------------------------------------------------------
+
+!*         6.     TRANSFORM FLUXES TO MODEL HISTORICAL VARIABLES
+
+! 600 CONTINUE
+
+DO JK=1,KLEV+1
+  DO JL=KIDIA,KFDIA
+    PTRSO(JL,JK)=ZFRSO(JL,JK)/(ZRII0*ZAMU0(JL))
+    PEMTD(JL,JK)=ZFRTH(JL,JK)
+  ENDDO
+ENDDO
+
+DO JL=KIDIA,KFDIA
+  PTRSOD(JL)=ZFRSOD(JL)/(ZRII0*ZAMU0(JL))
+  PDSRP(JL) =ZSUDU(JL)
+  PSUDU(JL) =ZSUDU(JL)/(ZRII0*ZAMU0(JL))
+  IF (PDSRP(JL) >= RSUNDUR) THEN
+    PSDUR(JL)=1.0_JPRB
+  ELSE
+    PSDUR(JL)=0.0_JPRB
+  ENDIF
+ENDDO
+
+DO JL=KIDIA,KFDIA
+  PCTRSO(JL,1) =ZFRSOC(JL,1)/(ZRII0*ZAMU0(JL))
+  PCTRSO(JL,2) =ZFRSOC(JL,KLEV+1)/(ZRII0*ZAMU0(JL))
+
+  PCEMTR(JL,1)=ZFRTHC(JL,     1)
+  PCEMTR(JL,2)=ZFRTHC(JL,KLEV+1)
+ENDDO
+
+!     ------------------------------------------------------------------
+
+END SUBROUTINE RADINA
